@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 session_start();
 define('BASE_URL', '/opbms');
 require_once __DIR__ . '/../config/database.php';

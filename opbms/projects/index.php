@@ -9,44 +9,20 @@ $pdo = getDB();
 $uid  = $_SESSION['user_id'];
 $role = $_SESSION['user_role'];
 
-// Build query based on role
-if ($role === 'admin') {
-    $projects = $pdo->query("SELECT p.*, d.name as dept_name, o.name as org_name, u.name as mgr_name,
-        COALESCE(b.amount,0) AS proj_budget,
-        (SELECT COALESCE(SUM(e.amount),0) FROM expenses e WHERE e.project_id=p.id AND e.status='approved') AS proj_exp,
-        (SELECT COALESCE(SUM(e.amount),0) FROM expenses e WHERE e.project_id=p.id AND e.status='pending') AS pending_exp
-        FROM projects p
-        JOIN departments d ON d.id=p.department_id
-        JOIN organizations o ON o.id=d.organization_id
-        LEFT JOIN users u ON u.id=p.manager_id
-        LEFT JOIN budgets b ON b.entity_type='project' AND b.entity_id=p.id AND b.status='approved'
-        ORDER BY o.name, d.name, p.status, p.name")->fetchAll();
-} elseif ($role === 'dept_manager') {
-    $stmt = $pdo->prepare("SELECT p.*, d.name as dept_name, o.name as org_name, u.name as mgr_name,
-        COALESCE(b.amount,0) AS proj_budget,
-        (SELECT COALESCE(SUM(e.amount),0) FROM expenses e WHERE e.project_id=p.id AND e.status='approved') AS proj_exp,
-        (SELECT COALESCE(SUM(e.amount),0) FROM expenses e WHERE e.project_id=p.id AND e.status='pending') AS pending_exp
-        FROM projects p
-        JOIN departments d ON d.id=p.department_id AND d.manager_id=?
-        JOIN organizations o ON o.id=d.organization_id
-        LEFT JOIN users u ON u.id=p.manager_id
-        LEFT JOIN budgets b ON b.entity_type='project' AND b.entity_id=p.id AND b.status='approved'
-        ORDER BY d.name, p.name");
-    $stmt->execute([$uid]); $projects = $stmt->fetchAll();
-} else { // project_manager
-    $stmt = $pdo->prepare("SELECT p.*, d.name as dept_name, o.name as org_name, u.name as mgr_name,
-        COALESCE(b.amount,0) AS proj_budget,
-        (SELECT COALESCE(SUM(e.amount),0) FROM expenses e WHERE e.project_id=p.id AND e.status='approved') AS proj_exp,
-        (SELECT COALESCE(SUM(e.amount),0) FROM expenses e WHERE e.project_id=p.id AND e.status='pending') AS pending_exp
-        FROM projects p
-        JOIN departments d ON d.id=p.department_id
-        JOIN organizations o ON o.id=d.organization_id
-        LEFT JOIN users u ON u.id=p.manager_id
-        LEFT JOIN budgets b ON b.entity_type='project' AND b.entity_id=p.id AND b.status='approved'
-        WHERE p.manager_id=? OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=? AND pm.role='manager')
-        ORDER BY p.name");
-    $stmt->execute([$uid, $uid]); $projects = $stmt->fetchAll();
-}
+[$projectScope, $projectParams] = getProjectScopeSql($role, (int)$uid);
+$projectStmt = $pdo->prepare("SELECT p.*, d.name as dept_name, o.name as org_name, u.name as mgr_name,
+        COALESCE(v.allocated_budget,0) AS proj_budget,
+        COALESCE(v.approved_expenditure,0) AS proj_exp,
+        COALESCE(v.pending_amount,0) AS pending_exp
+    FROM projects p
+    JOIN departments d ON d.id=p.department_id
+    JOIN organizations o ON o.id=d.organization_id
+    LEFT JOIN users u ON u.id=p.manager_id
+    LEFT JOIN v_project_budget_summary v ON v.project_id=p.id AND v.fiscal_year=YEAR(CURDATE())
+    WHERE {$projectScope}
+    ORDER BY o.name, d.name, p.status, p.name");
+$projectStmt->execute($projectParams);
+$projects = $projectStmt->fetchAll();
 
 $pageTitle = 'Projects';
 require_once __DIR__ . '/../includes/header.php';

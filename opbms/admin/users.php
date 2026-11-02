@@ -17,13 +17,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     $userId = sanitizeInt($_POST['user_id'] ?? 0);
 
-    // Prevent admin from deactivating themselves
-    if ($userId === (int)$_SESSION['user_id'] && in_array($action, ['deactivate', 'delete'])) {
+    // Prevent self-lockout and preserve at least one active administrator.
+    if ($userId === (int)$_SESSION['user_id'] && in_array($action, ['deactivate', 'delete', 'toggle_active'], true)) {
         setFlash('You cannot deactivate or delete your own account.', 'danger');
         redirect(BASE_URL . '/admin/users.php');
     }
 
     if ($action === 'toggle_active' && $userId > 0) {
+        $target = $pdo->prepare("SELECT role, is_active FROM users WHERE id=?");
+        $target->execute([$userId]);
+        $targetUser = $target->fetch();
+        if (!$targetUser) {
+            setFlash('User not found.', 'danger');
+            redirect(BASE_URL . '/admin/users.php');
+        }
+        if ($targetUser['role'] === 'admin' && $targetUser['is_active']) {
+            $activeAdmins = $pdo->query("SELECT COUNT(*) FROM users WHERE role='admin' AND is_active=1")->fetchColumn();
+            if ((int)$activeAdmins <= 1) {
+                setFlash('The last active administrator cannot be deactivated.', 'danger');
+                redirect(BASE_URL . '/admin/users.php');
+            }
+        }
         $stmt = $pdo->prepare("UPDATE users SET is_active = 1 - is_active WHERE id = ?");
         $stmt->execute([$userId]);
         setFlash('User status updated.', 'success');
@@ -36,6 +50,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!in_array($newRole, $validRoles)) {
             setFlash('Invalid role selected.', 'danger');
             redirect(BASE_URL . '/admin/users.php');
+        }
+        if ($userId === (int)$_SESSION['user_id'] && $newRole !== 'admin') {
+            setFlash('You cannot remove your own administrator role.', 'danger');
+            redirect(BASE_URL . '/admin/users.php');
+        }
+        if ($userId > 0) {
+            $target = $pdo->prepare("SELECT role FROM users WHERE id=?");
+            $target->execute([$userId]);
+            $targetUser = $target->fetch();
+            if (!$targetUser) {
+                setFlash('User not found.', 'danger');
+                redirect(BASE_URL . '/admin/users.php');
+            }
+            if ($targetUser['role'] === 'admin' && $newRole !== 'admin') {
+                $activeAdmins = $pdo->query("SELECT COUNT(*) FROM users WHERE role='admin' AND is_active=1")->fetchColumn();
+                if ((int)$activeAdmins <= 1) {
+                    setFlash('The last active administrator cannot be demoted.', 'danger');
+                    redirect(BASE_URL . '/admin/users.php');
+                }
+            }
         }
         $stmt = $pdo->prepare("UPDATE users SET role = ? WHERE id = ?");
         $stmt->execute([$newRole, $userId]);

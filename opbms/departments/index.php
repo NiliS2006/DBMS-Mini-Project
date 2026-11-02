@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 session_start();
 define('BASE_URL', '/opbms');
 require_once __DIR__ . '/../config/database.php';
@@ -9,27 +9,19 @@ $pdo = getDB();
 $uid  = $_SESSION['user_id'];
 $role = $_SESSION['user_role'];
 
-if ($role === 'admin') {
-    $depts = $pdo->query("SELECT d.*, o.name as org_name, u.name as mgr_name,
-        COALESCE(b.amount,0) AS budget,
-        (SELECT COALESCE(SUM(e.amount),0) FROM expenses e WHERE e.department_id=d.id AND e.status='approved') AS expenditure
-        FROM departments d
-        JOIN organizations o ON o.id=d.organization_id
-        LEFT JOIN users u ON u.id=d.manager_id
-        LEFT JOIN budgets b ON b.entity_type='department' AND b.entity_id=d.id AND b.status='approved'
-        WHERE d.is_active=1 ORDER BY o.name, d.name")->fetchAll();
-} else {
-    $stmt = $pdo->prepare("SELECT d.*, o.name as org_name, u.name as mgr_name,
-        COALESCE(b.amount,0) AS budget,
-        (SELECT COALESCE(SUM(e.amount),0) FROM expenses e WHERE e.department_id=d.id AND e.status='approved') AS expenditure
-        FROM departments d
-        JOIN organizations o ON o.id=d.organization_id
-        LEFT JOIN users u ON u.id=d.manager_id
-        LEFT JOIN budgets b ON b.entity_type='department' AND b.entity_id=d.id AND b.status='approved'
-        WHERE d.manager_id=? AND d.is_active=1 ORDER BY d.name");
-    $stmt->execute([$uid]);
-    $depts = $stmt->fetchAll();
-}
+$deptCondition = $role === 'admin' ? '1=1' : 'd.manager_id=?';
+$deptParams = $role === 'admin' ? [] : [(int)$uid];
+$stmt = $pdo->prepare("SELECT d.*, o.name as org_name, u.name as mgr_name,
+        COALESCE(v.allocated_budget,0) AS budget,
+        COALESCE(v.approved_expenditure,0) AS expenditure
+    FROM departments d
+    JOIN organizations o ON o.id=d.organization_id
+    LEFT JOIN users u ON u.id=d.manager_id
+    LEFT JOIN v_dept_budget_summary v ON v.dept_id=d.id AND v.fiscal_year=YEAR(CURDATE())
+    WHERE d.is_active=1 AND $deptCondition
+    ORDER BY o.name, d.name");
+$stmt->execute($deptParams);
+$depts = $stmt->fetchAll();
 $pageTitle = 'Departments';
 require_once __DIR__ . '/../includes/header.php';
 require_once __DIR__ . '/../includes/sidebar.php';

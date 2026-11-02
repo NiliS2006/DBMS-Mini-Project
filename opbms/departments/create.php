@@ -21,7 +21,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $data['manager_id']      = sanitizeInt($_POST['manager_id'] ?? 0) ?: null;
 
     if (!$data['organization_id']) $errors[] = 'Please select an organization.';
-    if (!$data['name'])            $errors[] = 'Department name is required.';
+    if (!$data['name'] || strlen($data['name']) > 200) $errors[] = 'Department name must be between 1 and 200 characters.';
+
+    $check = $pdo->prepare("SELECT COUNT(*) FROM organizations WHERE id=? AND is_active=1");
+    $check->execute([$data['organization_id']]);
+    if (!$check->fetchColumn()) $errors[] = 'Select an active organization.';
+    if ($data['manager_id']) {
+        $check = $pdo->prepare("SELECT COUNT(*) FROM users WHERE id=? AND is_active=1 AND role IN ('dept_manager','admin')");
+        $check->execute([$data['manager_id']]);
+        if (!$check->fetchColumn()) $errors[] = 'Select an active department manager.';
+    }
 
     if (empty($errors)) {
         $stmt = $pdo->prepare("INSERT INTO departments (organization_id, name, description, manager_id) VALUES (?,?,?,?)");

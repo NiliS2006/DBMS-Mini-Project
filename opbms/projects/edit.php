@@ -43,11 +43,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $data['start_date']    = trim($_POST['start_date'] ?? '');
     $data['end_date']      = trim($_POST['end_date'] ?? '');
     $data['status']        = trim($_POST['status'] ?? 'active');
-    $selectedMembers       = array_filter(array_map('intval', $_POST['members'] ?? []));
+    $membersInput = $_POST['members'] ?? [];
+    if (!is_array($membersInput)) {
+        $selectedMembers = [];
+        $errors[] = 'Invalid project team selection.';
+    } else {
+        $selectedMembers = array_values(array_unique(array_filter(array_map('intval', $membersInput), fn($memberId) => $memberId > 0)));
+    }
 
     if (!$data['department_id']) $errors[] = 'Please select a department.';
-    if (!$data['name'])          $errors[] = 'Project name is required.';
+    if (!$data['name'] || strlen($data['name']) > 200) $errors[] = 'Project name must be between 1 and 200 characters.';
+    if (!in_array($data['status'], ['active','completed','on_hold','cancelled'], true)) $errors[] = 'Invalid project status.';
+    if ($data['start_date'] && !isValidDate($data['start_date'])) $errors[] = 'Invalid start date.';
+    if ($data['end_date'] && !isValidDate($data['end_date'])) $errors[] = 'Invalid end date.';
     if ($data['start_date'] && $data['end_date'] && $data['end_date'] < $data['start_date']) $errors[] = 'End date must be after start date.';
+
+    if ($data['department_id']) {
+        $check = $pdo->prepare("SELECT COUNT(*) FROM departments WHERE id=? AND is_active=1");
+        $check->execute([$data['department_id']]);
+        if (!$check->fetchColumn()) $errors[] = 'Select an active department.';
+    }
+    if ($data['manager_id']) {
+        $check = $pdo->prepare("SELECT COUNT(*) FROM users WHERE id=? AND is_active=1 AND role IN ('project_manager','admin')");
+        $check->execute([$data['manager_id']]);
+        if (!$check->fetchColumn()) $errors[] = 'Select an active project manager.';
+    }
+    if ($selectedMembers) {
+        $placeholders = implode(',', array_fill(0, count($selectedMembers), '?'));
+        $check = $pdo->prepare("SELECT COUNT(*) FROM users WHERE id IN ($placeholders) AND is_active=1 AND role IN ('employee','project_manager','admin')");
+        $check->execute($selectedMembers);
+        if ((int)$check->fetchColumn() !== count($selectedMembers)) $errors[] = 'Project team contains an invalid or inactive user.';
+    }
 
     if (empty($errors)) {
         $pdo->beginTransaction();

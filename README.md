@@ -12,6 +12,7 @@ Built with **PHP 8+**, **MySQL**, and vanilla HTML/CSS/JS — designed to run lo
 - [Installation](#installation)
 - [Database Configuration](#database-configuration)
 - [Running the Application](#running-the-application)
+- [Website and Collaboration Guide](#website-and-collaboration-guide)
 - [Demo Credentials](#demo-credentials)
 - [Features by Role](#features-by-role)
 - [Database Schema](#database-schema)
@@ -36,7 +37,8 @@ Built with **PHP 8+**, **MySQL**, and vanilla HTML/CSS/JS — designed to run lo
 DBMS Mini Project/
 ├── DBMS_Mini_Project.pdf          # Project specification document
 └── opbms/                         # Main application directory
-    ├── index.php                  # Entry point — redirects to login or dashboard
+    ├── index.php                  # Public landing page; signed-in users go to their dashboard
+    ├── contact.php                # Contact form handler
     ├── dashboard.php              # Organizational dashboard
     ├── admin/
     │   └── users.php              # Admin: user management
@@ -45,22 +47,25 @@ DBMS Mini Project/
     │   └── review.php            # Approve or reject an expense
     ├── assets/
     │   ├── css/style.css          # Global stylesheet
-    │   └── js/main.js             # Global JavaScript
+    │   ├── js/main.js             # Global JavaScript
+    │   └── uploads/.htaccess      # Denies direct receipt-file access
     ├── auth/
     │   ├── login.php              # Login page
+    │   ├── register.php           # Personal account registration
     │   └── logout.php             # Logout handler
     ├── budgets/
     │   ├── index.php              # Budget list
     │   ├── create.php             # Create budget
-    │   └── approve.php            # Approve/revise budget (AJAX endpoint)
+    │   └── approve.php            # Approve proposed budgets
     ├── config/
     │   └── database.php           # PDO connection (edit credentials here)
     ├── database/
-    │   └── opbms.sql              # Full schema + seed data
+    │   ├── opbms.sql              # Full schema + seed data
+    │   └── migrations/            # Ordered updates for existing databases
     ├── departments/
     │   ├── index.php / create.php / edit.php / view.php
     ├── expenses/
-    │   ├── index.php / create.php / view.php
+    │   ├── index.php / create.php / edit.php / view.php / receipt.php
     ├── income/
     │   ├── index.php / create.php
     ├── includes/
@@ -79,6 +84,8 @@ DBMS Mini Project/
     │   └── reports.php            # Personal reports & charts
     ├── projects/
     │   ├── index.php / create.php / edit.php / view.php
+    ├── docs/
+    │   └── WEBSITE.md             # Website and collaboration guide
     └── reports/
         └── index.php              # Organizational financial reports
 ```
@@ -105,14 +112,15 @@ C:\xampp\htdocs\opbms\
 ### Step 3 — Import the database
 
 1. Open your browser and go to: [http://localhost/phpmyadmin](http://localhost/phpmyadmin)
-2. Click **New** in the left sidebar to create a new database.
-3. Enter the name `opbms`, choose `utf8mb4_unicode_ci`, and click **Create**.
-4. Select the `opbms` database, then click the **Import** tab.
-5. Click **Choose File** and select:
+2. Click **New** in the left sidebar to create an empty database named `opbms`, using `utf8mb4_unicode_ci`.
+3. Select the new `opbms` database, then click the **Import** tab.
+4. Click **Choose File** and select:
    ```
    C:\xampp\htdocs\opbms\database\opbms.sql
    ```
-6. Click **Go** to import. The schema and all seed data will be loaded.
+5. Click **Go** to import. The schema and demo data will be loaded.
+
+> **Existing database:** Do not re-import `opbms.sql` into a database that already contains project data; its seed inserts are for a fresh database. Back up the existing database first, review the preflight query results in `database/migrations/001_enforce_transaction_hierarchy.sql`, then apply migrations `001`–`004` in order. Resolve any nonzero hierarchy validation counts before applying migration `001`. Migration `004` repairs only malformed hashes for the seeded demo accounts; valid password hashes are preserved.
 
 ### Step 4 — Configure the database connection
 
@@ -125,10 +133,13 @@ Update the credentials if needed (defaults work for a fresh XAMPP install):
 
 ```php
 define('DB_HOST', 'localhost');
+define('DB_PORT', 3306);       // Use 3307 if you configured XAMPP MySQL on port 3307
 define('DB_NAME', 'opbms');
 define('DB_USER', 'root');    // change if your MySQL user is different
 define('DB_PASS', '');        // change if you set a MySQL password
 ```
+
+If port `3306` is already in use, configure XAMPP MySQL and phpMyAdmin to use a free port, then set the same value for `DB_PORT` here. Also set `DB_USER` and `DB_PASS` to the credentials for that MySQL server.
 
 ---
 
@@ -139,8 +150,16 @@ define('DB_PASS', '');        // change if you set a MySQL password
 
    **[http://localhost/opbms](http://localhost/opbms)**
 
-3. You will be redirected to the login page.
-4. Use any of the demo credentials below to log in.
+3. Use **Log in** to access an existing account or **Get started** to create a personal account.
+4. For testing, use any of the demo credentials below to log in.
+
+The public home page is available at `http://localhost/opbms/`. Visitors can create a **personal** account from the sign-up page; organizational roles remain administrator-managed. The contact form requires `OPBMS_CONTACT_EMAIL` to be set in the PHP/Apache environment and PHP `mail()` to be configured. If mail delivery is not configured, the form reports that instead of claiming the message was sent.
+
+---
+
+## Website and Collaboration Guide
+
+The public landing page and sign-up flow are documented in [`opbms/docs/WEBSITE.md`](opbms/docs/WEBSITE.md), including the frontend structure, contact-mail configuration, testing notes, and safe collaboration practices.
 
 ---
 
@@ -151,12 +170,12 @@ define('DB_PASS', '');        // change if you set a MySQL password
 | Role | Name | Email | Access Level |
 |---|---|---|---|
 | **Admin** | Alice Admin | `admin@opbms.com` | Full system access |
-| **Dept Manager** | David DeptMgr | `dept@opbms.com` | Dept + project management, approvals |
-| **Dept Manager 2** | Raj DeptMgr2 | `dept2@opbms.com` | Dept + project management, approvals |
-| **Project Manager** | Paul ProjMgr | `proj@opbms.com` | Project management, expense approvals |
-| **Project Manager 2** | Priya ProjMgr2 | `proj2@opbms.com` | Project management, expense approvals |
-| **Employee** | Emma Employee | `employee@opbms.com` | Submit expenses, view own records |
-| **Employee 2** | Sam Employee2 | `employee2@opbms.com` | Submit expenses, view own records |
+| **Dept Manager** | David DeptMgr | `dept@opbms.com` | Assigned departments/projects, scoped approvals, budget proposals |
+| **Dept Manager 2** | Raj DeptMgr2 | `dept2@opbms.com` | Assigned departments/projects, scoped approvals, budget proposals |
+| **Project Manager** | Paul ProjMgr | `proj@opbms.com` | Assigned projects, scoped approvals, budget proposals |
+| **Project Manager 2** | Priya ProjMgr2 | `proj2@opbms.com` | Assigned projects, scoped approvals, budget proposals |
+| **Employee** | Emma Employee | `employee@opbms.com` | Submit, edit, cancel, and view own expenses; personal finance |
+| **Employee 2** | Sam Employee2 | `employee2@opbms.com` | Submit, edit, cancel, and view own expenses; personal finance |
 | **Personal User** | Nina Personal | `personal@opbms.com` | Personal finance module only |
 
 ---
@@ -172,19 +191,19 @@ define('DB_PASS', '');        // change if you set a MySQL password
 - **Financial reports** with Chart.js visualizations
 
 ### Department Manager
-- Department and project management
-- Budget creation and approval workflow
-- Expense approval queue (review, approve, reject)
+- Assigned department and project oversight
+- Propose departmental/project budgets for administrator approval
+- Scoped expense approval queue (cannot approve own submissions)
 - Income recording
 - Financial reports
 
 ### Project Manager
-- Project-level management and budget creation
-- Expense submission and approval for own projects
+- Assigned-project oversight and budget proposals
+- Expense submission and approval for assigned projects (cannot approve own submissions)
 - Financial reports
 
 ### Employee
-- Submit and track own expenses
+- Submit, edit, cancel, and track own pending expenses
 - View personal expense history
 - Personal finance module (transactions, budgets, reports)
 
@@ -198,7 +217,7 @@ define('DB_PASS', '');        // change if you set a MySQL password
 
 ## Database Schema
 
-The database uses **11 tables** and **2 views**:
+The database uses **12 tables** and **2 views**:
 
 | Table | Description |
 |---|---|
@@ -219,8 +238,8 @@ The database uses **11 tables** and **2 views**:
 
 | View | Description |
 |---|---|
-| `v_project_budget_summary` | Budget vs actual spending per project with utilization % |
-| `v_dept_budget_summary` | Budget vs actual spending per department with utilization % |
+| `v_project_budget_summary` | Year-specific project budget, approved/pending spending, and utilization |
+| `v_dept_budget_summary` | Year-specific department budget, approved spending, and utilization |
 
 ### Entity Hierarchy
 
@@ -235,22 +254,25 @@ Organization
 ### Key Design Decisions
 
 - All monetary values use `DECIMAL(15,2)` for precision
-- `expenses.status` ENUM controls the approval workflow: `pending → approved / rejected`
+- `expenses.status` ENUM controls the workflow: `pending → approved / rejected / cancelled`
 - `budgets.entity_type` ENUM (`organization`, `department`, `project`) allows a single table to serve all budget levels
 - `approval_history` provides a complete audit trail separate from the `expenses` table
+- Composite foreign keys enforce that selected department, organization, and project references agree on organizational transactions
 - `personal_transactions` and `personal_budgets` are entirely user-scoped (no cross-user access)
-- All foreign keys use `ON DELETE CASCADE` or `ON DELETE RESTRICT` as appropriate
+- Pending expense edits and cancellations are recorded in approval history; cancelled expenses are excluded from approved expenditure
+- All foreign keys use `ON DELETE CASCADE`, `ON DELETE SET NULL`, or `ON DELETE RESTRICT` as appropriate
+- Sessions expire after 30 minutes of inactivity, and account activation/role changes are checked against MySQL on authenticated requests
 
 ---
 
 ## Known Limitations
 
-1. **No file upload for receipts** — The `expenses.receipt_path` column exists in the schema but the UI does not implement file upload. This can be added with PHP's `move_uploaded_file()`.
-2. **No email notifications** — Password resets and approval notifications are in-app only; no SMTP integration.
-3. **No pagination on large tables** — All table listings fetch all records. For production use, add `LIMIT/OFFSET` pagination.
-4. **Single organization per deployment** — While the schema supports multiple organizations, role-based filtering for multi-org isolation is simplified (admins see all data).
-5. **Password security** — Demo seeds use a common password. In production, enforce strong password policies and use `password_hash()` with `PASSWORD_BCRYPT` (already implemented in the application).
-6. **Not tested under HTTPS** — The application uses `session_start()` and cookie defaults. For production, enable `session.cookie_secure = 1` and serve over HTTPS.
+1. **No email notifications** — Password resets and approval notifications are in-app only; no SMTP integration.
+2. **No pagination on large tables** — Several table listings fetch all matching records. For production use, add `LIMIT/OFFSET` pagination.
+3. **Receipt storage depends on Apache overrides** — Receipts are served through an access-checked PHP endpoint and direct access is denied by `assets/uploads/.htaccess`. Ensure Apache allows this `.htaccess` file to take effect.
+4. **Demo credentials are not production credentials** — All seeded accounts share the password `password`. Change or remove these accounts before deployment.
+5. **HTTPS is not configured by the local XAMPP setup** — Use HTTPS and secure session-cookie settings before exposing the application outside a trusted local environment.
+6. **Runtime integration tests require a configured MySQL account** — Confirm `config/database.php` credentials match the local MySQL installation before testing workflows.
 
 ---
 

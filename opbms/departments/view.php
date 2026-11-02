@@ -26,13 +26,15 @@ if ($role === 'dept_manager' && $dept['manager_id'] != $uid) {
 }
 
 // Budget
-$budg = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM budgets WHERE entity_type='department' AND entity_id=? AND status='approved'");
-$budg->execute([$id]); $budget = (float)$budg->fetchColumn();
+$summaryStmt = $pdo->prepare("SELECT allocated_budget, approved_expenditure FROM v_dept_budget_summary
+    WHERE dept_id=? AND fiscal_year=YEAR(CURDATE())");
+$summaryStmt->execute([$id]);
+$summary = $summaryStmt->fetch() ?: ['allocated_budget'=>0, 'approved_expenditure'=>0];
+$budget = (float)$summary['allocated_budget'];
+$approvedExp = (float)$summary['approved_expenditure'];
 
-$appExp = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM expenses WHERE department_id=? AND status='approved'");
-$appExp->execute([$id]); $approvedExp = (float)$appExp->fetchColumn();
-
-$pendExp = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM expenses WHERE department_id=? AND status='pending'");
+$pendExp = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM expenses
+    WHERE department_id=? AND status='pending' AND YEAR(expense_date)=YEAR(CURDATE())");
 $pendExp->execute([$id]); $pendingExp = (float)$pendExp->fetchColumn();
 
 $remaining = $budget - $approvedExp;
@@ -40,11 +42,11 @@ $util = $budget > 0 ? round($approvedExp / $budget * 100, 2) : 0;
 
 // Projects in this dept
 $projQ = "SELECT p.*, u.name as mgr_name,
-    COALESCE(b.amount,0) AS proj_budget,
-    (SELECT COALESCE(SUM(e.amount),0) FROM expenses e WHERE e.project_id=p.id AND e.status='approved') AS proj_exp
+    COALESCE(v.allocated_budget,0) AS proj_budget,
+    COALESCE(v.approved_expenditure,0) AS proj_exp
     FROM projects p
     LEFT JOIN users u ON u.id=p.manager_id
-    LEFT JOIN budgets b ON b.entity_type='project' AND b.entity_id=p.id AND b.status='approved'
+    LEFT JOIN v_project_budget_summary v ON v.project_id=p.id AND v.fiscal_year=YEAR(CURDATE())
     WHERE p.department_id=?
     ORDER BY p.status, p.name";
 $projStmt = $pdo->prepare($projQ);
@@ -54,7 +56,7 @@ $projStmt->execute([$id]); $projects = $projStmt->fetchAll();
 $expStmt = $pdo->prepare("SELECT e.*, u.name as submitter_name, ec.name as cat_name
     FROM expenses e JOIN users u ON u.id=e.submitted_by
     LEFT JOIN expense_categories ec ON ec.id=e.category_id
-    WHERE e.department_id=? ORDER BY e.created_at DESC LIMIT 8");
+    WHERE e.department_id=? AND YEAR(e.expense_date)=YEAR(CURDATE()) ORDER BY e.created_at DESC LIMIT 8");
 $expStmt->execute([$id]); $expenses = $expStmt->fetchAll();
 
 $pageTitle = e($dept['name']);

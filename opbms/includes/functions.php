@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // Global helper functions for OPBMS
 
 function e(string $s): string {
@@ -88,6 +88,19 @@ function paginationLinks(int $total, int $page, int $perPage, string $baseUrl): 
 
 function sanitizeFloat(mixed $val): float {
     return max(0, (float) filter_var($val, FILTER_SANITIZE_NUMBER_FLOAT, FILTER_FLAG_ALLOW_FRACTION));
+}
+
+function isValidMoney(mixed $val, bool $allowZero = false): bool {
+    if (!is_string($val) && !is_int($val) && !is_float($val)) {
+        return false;
+    }
+
+    $value = trim((string)$val);
+    if (!preg_match('/^\d{1,13}(?:\.\d{1,2})?$/D', $value)) {
+        return false;
+    }
+
+    return $allowZero ? (float)$value >= 0 : (float)$value > 0;
 }
 
 function sanitizeInt(mixed $val): int {

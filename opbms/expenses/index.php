@@ -15,9 +15,9 @@ $projectFilter  = sanitizeInt($_GET['project_id'] ?? 0);
 $deptFilter     = sanitizeInt($_GET['dept_id']    ?? 0);
 
 // Build query
-$where = ['1=1'];
-$params = [];
-if ($role === 'employee') { $where[] = 'e.submitted_by = ?'; $params[] = $uid; }
+$expenseScope = getExpenseScopeSql($role, (int)$uid, 'e');
+$where = [$expenseScope[0]];
+$params = $expenseScope[1];
 if ($statusFilter !== 'all') { $where[] = 'e.status = ?'; $params[] = $statusFilter; }
 if ($projectFilter) { $where[] = 'e.project_id = ?'; $params[] = $projectFilter; }
 if ($deptFilter)    { $where[] = 'e.department_id = ?'; $params[] = $deptFilter; }
@@ -36,8 +36,24 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $expenses = $stmt->fetchAll();
 
-$projects = $pdo->query("SELECT id, name FROM projects ORDER BY name")->fetchAll();
-$depts    = $pdo->query("SELECT id, name FROM departments WHERE is_active=1 ORDER BY name")->fetchAll();
+[$projectScope, $projectParams] = getProjectScopeSql($role, (int)$uid);
+$projectStmt = $pdo->prepare("SELECT id, name FROM projects p WHERE $projectScope ORDER BY name");
+$projectStmt->execute($projectParams);
+$projects = $projectStmt->fetchAll();
+
+if ($role === 'admin') {
+    $depts = $pdo->query("SELECT id, name FROM departments WHERE is_active=1 ORDER BY name")->fetchAll();
+} elseif ($role === 'dept_manager') {
+    $deptStmt = $pdo->prepare("SELECT id, name FROM departments WHERE is_active=1 AND manager_id=? ORDER BY name");
+    $deptStmt->execute([(int)$uid]);
+    $depts = $deptStmt->fetchAll();
+} elseif ($role === 'project_manager') {
+    $deptStmt = $pdo->prepare("SELECT DISTINCT d.id, d.name FROM departments d JOIN projects p ON p.department_id=d.id WHERE $projectScope ORDER BY d.name");
+    $deptStmt->execute($projectParams);
+    $depts = $deptStmt->fetchAll();
+} else {
+    $depts = [];
+}
 
 $pageTitle = 'Expenses';
 require_once __DIR__ . '/../includes/header.php';
@@ -62,6 +78,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
       <option value="pending"  <?= $statusFilter==='pending'?'selected':'' ?>>Pending</option>
       <option value="approved" <?= $statusFilter==='approved'?'selected':'' ?>>Approved</option>
       <option value="rejected" <?= $statusFilter==='rejected'?'selected':'' ?>>Rejected</option>
+      <option value="cancelled" <?= $statusFilter==='cancelled'?'selected':'' ?>>Cancelled</option>
     </select>
     <?php if ($role !== 'employee'): ?>
     <select name="project_id" onchange="this.form.submit()">

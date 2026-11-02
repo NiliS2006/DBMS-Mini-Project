@@ -13,6 +13,7 @@ if ($role === 'personal') { redirect(BASE_URL.'/personal/dashboard.php'); }
 $id = sanitizeInt($_GET['id'] ?? 0);
 if (!$id) { setFlash('Invalid expense.','danger'); redirect(BASE_URL.'/expenses/index.php'); }
 
+$expenseScope = getExpenseScopeSql($role, (int)$uid, 'e');
 $stmt = $pdo->prepare("SELECT e.*, u.name as submitter_name, u.email as submitter_email,
     ec.name as cat_name, p.name as proj_name, d.name as dept_name, o.name as org_name,
     a.name as approver_name
@@ -23,13 +24,40 @@ $stmt = $pdo->prepare("SELECT e.*, u.name as submitter_name, u.email as submitte
     LEFT JOIN departments d ON d.id=e.department_id
     LEFT JOIN organizations o ON o.id=e.organization_id
     LEFT JOIN users a ON a.id=e.approved_by
-    WHERE e.id=?");
-$stmt->execute([$id]); $exp = $stmt->fetch();
+    WHERE e.id=? AND ({$expenseScope[0]})");
+$stmt->execute(array_merge([$id], $expenseScope[1])); $exp = $stmt->fetch();
 if (!$exp) { setFlash('Expense not found.','danger'); redirect(BASE_URL.'/expenses/index.php'); }
 
-// Access control: employees can only see their own
-if ($role === 'employee' && $exp['submitted_by'] != $uid) {
-    http_response_code(403); require_once __DIR__.'/../includes/403.php'; exit;
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'cancel') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        setFlash('Invalid CSRF token.', 'danger');
+        redirect(BASE_URL.'/expenses/view.php?id='.$id);
+    }
+    if ((int)$exp['submitted_by'] !== $uid || $exp['status'] !== 'pending') {
+        setFlash('Only your pending expense submissions can be cancelled.', 'danger');
+        redirect(BASE_URL.'/expenses/view.php?id='.$id);
+    }
+
+    try {
+        $pdo->beginTransaction();
+        $cancel = $pdo->prepare("UPDATE expenses SET status='cancelled' WHERE id=? AND submitted_by=? AND status='pending'");
+        $cancel->execute([$id, $uid]);
+        if ($cancel->rowCount() !== 1) {
+            $pdo->rollBack();
+            setFlash('This expense was already reviewed and cannot be cancelled.', 'warning');
+        } else {
+            $historyStmt = $pdo->prepare("INSERT INTO approval_history (expense_id, action, action_by, notes)
+                VALUES (?, 'cancelled', ?, 'Cancelled by submitter before review.')");
+            $historyStmt->execute([$id, $uid]);
+            $pdo->commit();
+            setFlash('Expense cancelled.', 'success');
+        }
+    } catch (PDOException $ex) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        error_log('Expense cancellation failed: ' . $ex->getMessage());
+        setFlash('Failed to cancel the expense. Please try again.', 'danger');
+    }
+    redirect(BASE_URL.'/expenses/view.php?id='.$id);
 }
 
 // Approval history
@@ -48,6 +76,14 @@ require_once __DIR__ . '/../includes/sidebar.php';
       <p class="page-subtitle">Submitted by <?= e($exp['submitter_name']) ?> on <?= formatDate($exp['expense_date']) ?></p>
     </div>
     <div class="page-actions">
+      <?php if ($exp['status']==='pending' && (int)$exp['submitted_by']===$uid): ?>
+      <a href="<?= BASE_URL ?>/expenses/edit.php?id=<?= $id ?>" class="btn btn-secondary"><i class="fa fa-edit"></i> Edit</a>
+      <form method="POST" onsubmit="return confirm('Cancel this pending expense?');">
+        <?= csrfField() ?>
+        <input type="hidden" name="action" value="cancel">
+        <button type="submit" class="btn btn-danger"><i class="fa fa-times"></i> Cancel Expense</button>
+      </form>
+      <?php endif; ?>
       <?php if ($exp['status']==='pending' && in_array($role,['admin','dept_manager','project_manager'])): ?>
       <a href="<?= BASE_URL ?>/approvals/review.php?id=<?= $id ?>" class="btn btn-warning"><i class="fa fa-check-circle"></i> Review &amp; Decide</a>
       <?php endif; ?>
@@ -78,7 +114,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
         </div>
         <?php if ($exp['receipt_path']): ?>
         <div style="margin-top:16px;">
-          <a href="<?= BASE_URL ?>/<?= e($exp['receipt_path']) ?>" target="_blank" class="btn btn-sm btn-secondary"><i class="fa fa-paperclip"></i> View Receipt</a>
+          <a href="<?= BASE_URL ?>/expenses/receipt.php?id=<?= $id ?>" target="_blank" rel="noopener" class="btn btn-sm btn-secondary"><i class="fa fa-paperclip"></i> View Receipt</a>
         </div>
         <?php endif; ?>
       </div>
@@ -95,6 +131,8 @@ require_once __DIR__ . '/../includes/sidebar.php';
         <?php if ($exp['rejection_reason']): ?>
         <div class="approval-box"><strong>Rejection Reason:</strong><br><?= nl2br(e($exp['rejection_reason'])) ?></div>
         <?php endif; ?>
+        <?php elseif ($exp['status'] === 'cancelled'): ?>
+        <div class="alert alert-info"><i class="fa fa-ban"></i> <strong>Cancelled</strong> by the submitter before review.</div>
         <?php else: ?>
         <div class="alert alert-warning"><i class="fa fa-clock"></i> <strong>Pending review.</strong> Awaiting manager decision.</div>
         <?php if (in_array($role,['admin','dept_manager','project_manager'])): ?>

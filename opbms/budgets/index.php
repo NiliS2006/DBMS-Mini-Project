@@ -25,7 +25,13 @@ if ($role === 'admin') {
         ORDER BY b.fiscal_year DESC, b.entity_type, entity_name
     ")->fetchAll();
 } else {
-    // Dept/Proj managers see relevant budgets only
+    [$projectScope, $projectParams] = getProjectScopeSql($role, (int)$uid);
+    $budgetWhere = ["(b.entity_type='project' AND b.entity_id IN (SELECT p.id FROM projects p WHERE $projectScope))"];
+    $budgetParams = $projectParams;
+    if ($role === 'dept_manager') {
+        $budgetWhere[] = "(b.entity_type='department' AND b.entity_id IN (SELECT id FROM departments WHERE manager_id=?))";
+        $budgetParams[] = (int)$uid;
+    }
     $budgets = $pdo->prepare("
         SELECT b.*,
             CASE
@@ -36,12 +42,10 @@ if ($role === 'admin') {
         FROM budgets b
         JOIN users u ON u.id=b.created_by
         LEFT JOIN users a ON a.id=b.approved_by
-        WHERE (b.entity_type='department' AND b.entity_id IN (SELECT id FROM departments WHERE manager_id=?))
-           OR (b.entity_type='project' AND b.entity_id IN (SELECT id FROM projects WHERE manager_id=?))
-           OR (b.entity_type='project' AND b.entity_id IN (SELECT project_id FROM project_members WHERE user_id=? AND role='manager'))
+        WHERE " . implode(' OR ', $budgetWhere) . "
         ORDER BY b.fiscal_year DESC, b.entity_type, entity_name
     ");
-    $budgets->execute([$uid, $uid, $uid]);
+    $budgets->execute($budgetParams);
     $budgets = $budgets->fetchAll();
 }
 
@@ -57,14 +61,14 @@ require_once __DIR__ . '/../includes/sidebar.php';
       <p class="page-subtitle">Budget allocations across all organizational levels</p>
     </div>
     <div class="page-actions">
-      <?php if ($role === 'admin'): ?>
+      <?php if (in_array($role, ['admin','dept_manager','project_manager'], true)): ?>
       <a href="<?= BASE_URL ?>/budgets/create.php" class="btn btn-primary"><i class="fa fa-plus"></i> Allocate Budget</a>
       <?php endif; ?>
     </div>
   </div>
 
   <!-- Filter pills by entity type -->
-  <?php $typeFilter = $_GET['type'] ?? 'all'; ?>
+  <?php $typeFilter = in_array($_GET['type'] ?? 'all', ['all','organization','department','project'], true) ? ($_GET['type'] ?? 'all') : 'all'; ?>
   <div class="pill-tabs">
     <a href="?type=all" class="pill-tab <?= $typeFilter === 'all' ? 'active' : '' ?>">All</a>
     <a href="?type=organization" class="pill-tab <?= $typeFilter === 'organization' ? 'active' : '' ?>">Organization</a>

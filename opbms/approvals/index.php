@@ -8,15 +8,18 @@ requireRole(['admin','dept_manager','project_manager']);
 $pdo = getDB();
 $uid  = $_SESSION['user_id'];
 $role = $_SESSION['user_role'];
+$scope = getExpenseScopeSql($role, (int)$uid, 'e');
 
-$pendingExpenses = $pdo->query("SELECT e.*, u.name as submitter_name, p.name as proj_name, d.name as dept_name, ec.name as cat_name
+$pendingStmt = $pdo->prepare("SELECT e.*, u.name as submitter_name, p.name as proj_name, d.name as dept_name, ec.name as cat_name
     FROM expenses e
     JOIN users u ON u.id=e.submitted_by
     LEFT JOIN projects p ON p.id=e.project_id
     LEFT JOIN departments d ON d.id=e.department_id
     LEFT JOIN expense_categories ec ON ec.id=e.category_id
-    WHERE e.status='pending'
-    ORDER BY e.created_at ASC")->fetchAll();
+    WHERE e.status='pending' AND e.submitted_by <> ? AND ({$scope[0]})
+    ORDER BY e.created_at ASC");
+$pendingStmt->execute(array_merge([(int)$uid], $scope[1]));
+$pendingExpenses = $pendingStmt->fetchAll();
 
 $pageTitle = 'Pending Approvals';
 require_once __DIR__ . '/../includes/header.php';

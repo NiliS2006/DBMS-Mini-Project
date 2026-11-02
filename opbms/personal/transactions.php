@@ -13,7 +13,9 @@ $uid  = $_SESSION['user_id'];
 
 $month = sanitizeInt($_GET['month'] ?? date('n'));
 $year  = sanitizeInt($_GET['year']  ?? date('Y'));
-$typeFilter = $_GET['type'] ?? 'all';
+if ($month < 1 || $month > 12) $month = (int)date('n');
+if ($year < 2020 || $year > 2035) $year = (int)date('Y');
+$typeFilter = in_array($_GET['type'] ?? 'all', ['all','income','expense'], true) ? ($_GET['type'] ?? 'all') : 'all';
 
 $cats = $pdo->query("SELECT id, name FROM expense_categories WHERE type IN ('personal','both') AND is_active=1 ORDER BY name")->fetchAll();
 
@@ -23,19 +25,70 @@ $errors = [];
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_tx'])) {
     if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) { $errors[] = 'Invalid CSRF token.'; }
     $txType  = in_array($_POST['tx_type'] ?? '', ['income','expense']) ? $_POST['tx_type'] : '';
-    $txAmt   = sanitizeFloat($_POST['tx_amount'] ?? '');
+    $txAmtRaw = trim($_POST['tx_amount'] ?? '');
+    $txAmt   = sanitizeFloat($txAmtRaw);
     $txDesc  = trim($_POST['tx_description'] ?? '');
     $txDate  = trim($_POST['tx_date'] ?? '');
     $txCat   = sanitizeInt($_POST['tx_category_id'] ?? 0) ?: null;
 
     if (!$txType)  $errors[] = 'Transaction type is required.';
-    if ($txAmt<=0) $errors[] = 'Amount must be greater than zero.';
+    if (!isValidMoney($txAmtRaw)) $errors[] = 'Enter a valid amount with up to two decimal places.';
     if (!$txDate || !isValidDate($txDate)) $errors[] = 'Valid date required.';
+    if (strlen($txDesc) > 500) $errors[] = 'Description must be 500 characters or fewer.';
+    if ($txCat) {
+        $categoryCheck = $pdo->prepare("SELECT COUNT(*) FROM expense_categories WHERE id=? AND is_active=1 AND type IN ('personal','both')");
+        $categoryCheck->execute([$txCat]);
+        if (!$categoryCheck->fetchColumn()) $errors[] = 'Select a valid personal finance category.';
+    }
 
     if (empty($errors)) {
         $pdo->prepare("INSERT INTO personal_transactions (user_id, type, amount, category_id, description, transaction_date) VALUES (?,?,?,?,?,?)")
             ->execute([$uid, $txType, $txAmt, $txCat, $txDesc, $txDate]);
         setFlash('Transaction added successfully.', 'success');
+        redirect(BASE_URL.'/personal/transactions.php?month='.$month.'&year='.$year);
+    }
+}
+
+// Handle Edit
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_tx'])) {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $errors[] = 'Invalid CSRF token.';
+    }
+    $txId = sanitizeInt($_POST['tx_id'] ?? 0);
+    $txType = in_array($_POST['tx_type'] ?? '', ['income','expense'], true) ? $_POST['tx_type'] : '';
+    $txAmtRaw = trim($_POST['tx_amount'] ?? '');
+    $txAmt = sanitizeFloat($txAmtRaw);
+    $txDesc = trim($_POST['tx_description'] ?? '');
+    $txDate = trim($_POST['tx_date'] ?? '');
+    $txCat = sanitizeInt($_POST['tx_category_id'] ?? 0) ?: null;
+
+    if (!$txId) $errors[] = 'Invalid transaction.';
+    if (!$txType) $errors[] = 'Transaction type is required.';
+    if (!isValidMoney($txAmtRaw)) $errors[] = 'Enter a valid amount with up to two decimal places.';
+    if (!$txDate || !isValidDate($txDate)) $errors[] = 'Valid date required.';
+    if (strlen($txDesc) > 500) $errors[] = 'Description must be 500 characters or fewer.';
+    if ($txCat) {
+        $categoryCheck = $pdo->prepare("SELECT COUNT(*) FROM expense_categories WHERE id=? AND is_active=1 AND type IN ('personal','both')");
+        $categoryCheck->execute([$txCat]);
+        if (!$categoryCheck->fetchColumn()) $errors[] = 'Select a valid personal finance category.';
+    }
+
+    if (empty($errors)) {
+        $stmt = $pdo->prepare("UPDATE personal_transactions
+            SET type=?, amount=?, category_id=?, description=?, transaction_date=?
+            WHERE id=? AND user_id=?");
+        $stmt->execute([$txType, $txAmt, $txCat, $txDesc, $txDate, $txId, $uid]);
+        if ($stmt->rowCount() > 0) {
+            setFlash('Transaction updated successfully.', 'success');
+        } else {
+            $check = $pdo->prepare("SELECT id FROM personal_transactions WHERE id=? AND user_id=?");
+            $check->execute([$txId, $uid]);
+            if (!$check->fetch()) {
+                setFlash('Transaction not found.', 'danger');
+            } else {
+                setFlash('No transaction changes were made.', 'info');
+            }
+        }
         redirect(BASE_URL.'/personal/transactions.php?month='.$month.'&year='.$year);
     }
 }
@@ -121,7 +174,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
           </div>
           <div class="form-group">
             <label class="required">Date</label>
-            <input type="date" name="tx_date" value="<?= date('Y').'-'.str_pad($month,2,'0',STR_PAD_LEFT).'-'.date('d') ?>" required>
+            <input type="date" name="tx_date" value="<?= sprintf('%04d-%02d-01', $year, $month) ?>" required>
           </div>
           <div class="form-group">
             <label>Description</label>
@@ -159,7 +212,8 @@ require_once __DIR__ . '/../includes/sidebar.php';
               <div class="font-mono fw-600 <?= $tx['type']==='income'?'text-success':'text-danger' ?>">
                 <?= $tx['type']==='income'?'+':'-' ?><?= formatMoney((float)$tx['amount']) ?>
               </div>
-              <form method="POST" style="display:inline;" onsubmit="return confirm('Delete this transaction?');">
+            <button type="button" class="btn btn-sm btn-secondary" onclick="toggleTransactionEdit(<?= (int)$tx['id'] ?>)">Edit</button>
+            <form method="POST" style="display:inline;" onsubmit="return confirm('Delete this transaction?');">
                 <?= csrfField() ?>
                 <input type="hidden" name="delete_tx" value="1">
                 <input type="hidden" name="tx_id" value="<?= $tx['id'] ?>">
@@ -167,6 +221,45 @@ require_once __DIR__ . '/../includes/sidebar.php';
               </form>
             </div>
           </div>
+          <form method="POST" id="edit-tx-<?= (int)$tx['id'] ?>" class="card-body" style="display:none;border-bottom:1px solid var(--color-border);">
+            <?= csrfField() ?>
+            <input type="hidden" name="update_tx" value="1">
+            <input type="hidden" name="tx_id" value="<?= (int)$tx['id'] ?>">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Type</label>
+                <select name="tx_type" required>
+                  <option value="income" <?= $tx['type']==='income'?'selected':'' ?>>Income</option>
+                  <option value="expense" <?= $tx['type']==='expense'?'selected':'' ?>>Expense</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Amount (₹)</label>
+                <input type="number" name="tx_amount" value="<?= e(number_format((float)$tx['amount'],2,'.','')) ?>" min="0.01" step="0.01" required>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Category</label>
+                <select name="tx_category_id">
+                  <option value="">– No Category –</option>
+                  <?php foreach ($cats as $c): ?>
+                  <option value="<?= (int)$c['id'] ?>" <?= (int)$tx['category_id']===(int)$c['id']?'selected':'' ?>><?= e($c['name']) ?></option>
+                  <?php endforeach; ?>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Date</label>
+                <input type="date" name="tx_date" value="<?= e($tx['transaction_date']) ?>" required>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Description</label>
+              <input type="text" name="tx_description" value="<?= e($tx['description'] ?? '') ?>" maxlength="500">
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm">Save Changes</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleTransactionEdit(<?= (int)$tx['id'] ?>)">Cancel</button>
+          </form>
           <?php endforeach; ?>
           <?php endif; ?>
         </div>
@@ -174,4 +267,10 @@ require_once __DIR__ . '/../includes/sidebar.php';
     </div>
   </div>
 </main>
+<script>
+function toggleTransactionEdit(id) {
+  const form = document.getElementById('edit-tx-' + id);
+  form.style.display = form.style.display === 'none' ? '' : 'none';
+}
+</script>
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>

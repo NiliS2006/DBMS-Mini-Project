@@ -12,38 +12,24 @@ $role = $_SESSION['user_role'];
 $id = sanitizeInt($_GET['id'] ?? 0);
 if (!$id) { setFlash('Invalid project.','danger'); redirect(BASE_URL.'/projects/index.php'); }
 
+$projectScope = getProjectScopeSql($role, (int)$uid);
 $stmt = $pdo->prepare("SELECT p.*, d.name as dept_name, d.id as dept_id, o.name as org_name, o.id as org_id, u.name as mgr_name
     FROM projects p
     JOIN departments d ON d.id=p.department_id
     JOIN organizations o ON o.id=d.organization_id
     LEFT JOIN users u ON u.id=p.manager_id
-    WHERE p.id=?");
-$stmt->execute([$id]); $project = $stmt->fetch();
+    WHERE p.id=? AND ({$projectScope[0]})");
+$stmt->execute(array_merge([$id], $projectScope[1])); $project = $stmt->fetch();
 if (!$project) { setFlash('Project not found.','danger'); redirect(BASE_URL.'/projects/index.php'); }
 
-// Authorization: managers can only see their own projects
-if ($role === 'project_manager') {
-    $isMember = $pdo->prepare("SELECT COUNT(*) FROM project_members WHERE project_id=? AND user_id=?");
-    $isMember->execute([$id, $uid]);
-    if ($project['manager_id'] != $uid && !$isMember->fetchColumn()) {
-        http_response_code(403); require_once __DIR__.'/../includes/403.php'; exit;
-    }
-}
-if ($role === 'dept_manager') {
-    $isDeptMgr = $pdo->prepare("SELECT COUNT(*) FROM departments WHERE id=? AND manager_id=?");
-    $isDeptMgr->execute([$project['dept_id'], $uid]);
-    if (!$isDeptMgr->fetchColumn()) {
-        http_response_code(403); require_once __DIR__.'/../includes/403.php'; exit;
-    }
-}
-
 // Budget summary
-$budg = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM budgets WHERE entity_type='project' AND entity_id=? AND status='approved'");
-$budg->execute([$id]); $budget = (float)$budg->fetchColumn();
-$appExp = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM expenses WHERE project_id=? AND status='approved'");
-$appExp->execute([$id]); $approvedExp = (float)$appExp->fetchColumn();
-$pendExp = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM expenses WHERE project_id=? AND status='pending'");
-$pendExp->execute([$id]); $pendingExp = (float)$pendExp->fetchColumn();
+$summaryStmt = $pdo->prepare("SELECT allocated_budget, approved_expenditure, pending_amount
+    FROM v_project_budget_summary WHERE project_id=? AND fiscal_year=YEAR(CURDATE())");
+$summaryStmt->execute([$id]);
+$summary = $summaryStmt->fetch() ?: ['allocated_budget'=>0, 'approved_expenditure'=>0, 'pending_amount'=>0];
+$budget = (float)$summary['allocated_budget'];
+$approvedExp = (float)$summary['approved_expenditure'];
+$pendingExp = (float)$summary['pending_amount'];
 $remaining = $budget - $approvedExp;
 $util = $budget > 0 ? round($approvedExp / $budget * 100, 2) : 0;
 
@@ -64,7 +50,7 @@ $expStmt->execute([$id]); $expenses = $expStmt->fetchAll();
 // Category breakdown (for chart)
 $catBreakdown = $pdo->prepare("SELECT ec.name as cat_name, COALESCE(SUM(e.amount),0) as total
     FROM expenses e LEFT JOIN expense_categories ec ON ec.id=e.category_id
-    WHERE e.project_id=? AND e.status='approved'
+    WHERE e.project_id=? AND e.status='approved' AND YEAR(e.expense_date)=YEAR(CURDATE())
     GROUP BY e.category_id, ec.name ORDER BY total DESC LIMIT 8");
 $catBreakdown->execute([$id]); $catData = $catBreakdown->fetchAll();
 

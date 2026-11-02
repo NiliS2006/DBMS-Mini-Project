@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // Authentication and session management helpers
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -14,6 +14,27 @@ function requireLogin(): void {
         header('Location: ' . BASE_URL . '/auth/login.php');
         exit;
     }
+
+    $now = time();
+    if (isset($_SESSION['last_activity']) && $now - (int)$_SESSION['last_activity'] > 1800) {
+        logoutUser();
+        header('Location: ' . BASE_URL . '/auth/login.php');
+        exit;
+    }
+
+    $stmt = getDB()->prepare('SELECT name, email, role, is_active FROM users WHERE id = ?');
+    $stmt->execute([$_SESSION['user_id']]);
+    $user = $stmt->fetch();
+    if (!$user || !$user['is_active']) {
+        logoutUser();
+        header('Location: ' . BASE_URL . '/auth/login.php');
+        exit;
+    }
+
+    $_SESSION['user_name'] = $user['name'];
+    $_SESSION['user_email'] = $user['email'];
+    $_SESSION['user_role'] = $user['role'];
+    $_SESSION['last_activity'] = $now;
 }
 
 function requireRole(array $roles): void {
@@ -58,6 +79,7 @@ function loginUser(array $user): void {
     $_SESSION['user_name'] = $user['name'];
     $_SESSION['user_role'] = $user['role'];
     $_SESSION['user_email'] = $user['email'];
+    $_SESSION['last_activity'] = time();
 }
 
 function logoutUser(): void {
@@ -84,4 +106,94 @@ function canApproveDept(): bool {
 
 function canApproveProject(): bool {
     return isLoggedIn() && in_array($_SESSION['user_role'], ['admin', 'dept_manager', 'project_manager'], true);
+}
+
+function getProjectScopeSql(string $role, int $userId, string $alias = 'p'): array {
+    if (!preg_match('/^[a-z][a-z0-9_]*$/iD', $alias)) {
+        throw new InvalidArgumentException('Invalid SQL alias.');
+    }
+
+    if ($role === 'admin') {
+        return ['1=1', []];
+    }
+    if ($role === 'employee') {
+        return [
+            "$alias.id IN (SELECT project_id FROM project_members WHERE user_id = ?)",
+            [$userId]
+        ];
+    }
+    if ($role === 'dept_manager') {
+        return [
+            "($alias.department_id IN (SELECT id FROM departments WHERE manager_id = ?)
+              OR $alias.manager_id = ?
+              OR $alias.id IN (SELECT project_id FROM project_members WHERE user_id = ? AND role = 'manager'))",
+            [$userId, $userId, $userId]
+        ];
+    }
+    if ($role === 'project_manager') {
+        return [
+            "($alias.manager_id = ?
+              OR $alias.id IN (SELECT project_id FROM project_members WHERE user_id = ? AND role = 'manager'))",
+            [$userId, $userId]
+        ];
+    }
+
+    return ['1=0', []];
+}
+
+function getExpenseScopeSql(string $role, int $userId, string $alias = 'e'): array {
+    if (!preg_match('/^[a-z][a-z0-9_]*$/iD', $alias)) {
+        throw new InvalidArgumentException('Invalid SQL alias.');
+    }
+
+    if ($role === 'admin') {
+        return ['1=1', []];
+    }
+    if ($role === 'employee') {
+        return ["$alias.submitted_by = ?", [$userId]];
+    }
+
+    [$projectScope, $projectParams] = getProjectScopeSql($role, $userId, 'p');
+    if ($role === 'dept_manager') {
+        return [
+            "($alias.department_id IN (SELECT id FROM departments WHERE manager_id = ?)
+              OR $alias.project_id IN (SELECT p.id FROM projects p WHERE $projectScope))",
+            array_merge([$userId], $projectParams)
+        ];
+    }
+    if ($role === 'project_manager') {
+        return [
+            "$alias.project_id IN (SELECT p.id FROM projects p WHERE $projectScope)",
+            $projectParams
+        ];
+    }
+
+    return ['1=0', []];
+}
+
+function getIncomeScopeSql(string $role, int $userId, string $alias = 'i'): array {
+    if (!preg_match('/^[a-z][a-z0-9_]*$/iD', $alias)) {
+        throw new InvalidArgumentException('Invalid SQL alias.');
+    }
+
+    if ($role === 'admin') {
+        return ['1=1', []];
+    }
+
+    [$projectScope, $projectParams] = getProjectScopeSql($role, $userId, 'p');
+    if ($role === 'dept_manager') {
+        return [
+            "($alias.department_id IN (SELECT id FROM departments WHERE manager_id = ?)
+              OR $alias.project_id IN (SELECT p.id FROM projects p WHERE $projectScope))",
+            array_merge([$userId], $projectParams)
+        ];
+    }
+    if ($role === 'project_manager') {
+        return [
+            "$alias.project_id IN (SELECT p.id FROM projects p WHERE $projectScope)",
+            $projectParams
+        ];
+    }
+
+    return ['1=0', []];
 }

@@ -16,16 +16,16 @@ $org = $stmt->fetch();
 if (!$org) { setFlash('Organization not found.','danger'); redirect(BASE_URL.'/organization/index.php'); }
 
 // Budget summary
-$budget = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM budgets WHERE entity_type='organization' AND entity_id=? AND status='approved'");
+$budget = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM budgets WHERE entity_type='organization' AND entity_id=? AND status='approved' AND fiscal_year=YEAR(CURDATE())");
 $budget->execute([$id]); $totalBudget = (float)$budget->fetchColumn();
 
-$approved = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM expenses WHERE organization_id=? AND status='approved'");
+$approved = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM expenses WHERE organization_id=? AND status='approved' AND YEAR(expense_date)=YEAR(CURDATE())");
 $approved->execute([$id]); $totalExp = (float)$approved->fetchColumn();
 
-$pending = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM expenses WHERE organization_id=? AND status='pending'");
+$pending = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM expenses WHERE organization_id=? AND status='pending' AND YEAR(expense_date)=YEAR(CURDATE())");
 $pending->execute([$id]); $pendingExp = (float)$pending->fetchColumn();
 
-$income = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM income_records WHERE organization_id=?");
+$income = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM income_records WHERE organization_id=? AND YEAR(income_date)=YEAR(CURDATE())");
 $income->execute([$id]); $totalIncome = (float)$income->fetchColumn();
 
 $remaining = $totalBudget - $totalExp;
@@ -33,17 +33,17 @@ $util = $totalBudget > 0 ? round($totalExp / $totalBudget * 100, 2) : 0;
 
 // Departments
 $depts = $pdo->prepare("SELECT d.*, u.name as mgr_name,
-    COALESCE(b.amount,0) AS dept_budget,
-    (SELECT COALESCE(SUM(e.amount),0) FROM expenses e WHERE e.department_id=d.id AND e.status='approved') AS dept_exp,
+    COALESCE(v.allocated_budget,0) AS dept_budget,
+    COALESCE(v.approved_expenditure,0) AS dept_exp,
     (SELECT COUNT(*) FROM projects p WHERE p.department_id=d.id AND p.status='active') AS proj_count
     FROM departments d
     LEFT JOIN users u ON u.id=d.manager_id
-    LEFT JOIN budgets b ON b.entity_type='department' AND b.entity_id=d.id AND b.status='approved'
+    LEFT JOIN v_dept_budget_summary v ON v.dept_id=d.id AND v.fiscal_year=YEAR(CURDATE())
     WHERE d.organization_id=? AND d.is_active=1 ORDER BY d.name");
 $depts->execute([$id]); $departments = $depts->fetchAll();
 
 // Recent income
-$incRec = $pdo->prepare("SELECT ir.*, u.name as recorder FROM income_records ir JOIN users u ON u.id=ir.recorded_by WHERE ir.organization_id=? ORDER BY ir.income_date DESC LIMIT 6");
+$incRec = $pdo->prepare("SELECT ir.*, u.name as recorder FROM income_records ir JOIN users u ON u.id=ir.recorded_by WHERE ir.organization_id=? AND YEAR(ir.income_date)=YEAR(CURDATE()) ORDER BY ir.income_date DESC LIMIT 6");
 $incRec->execute([$id]); $incomeRecs = $incRec->fetchAll();
 
 $pageTitle = e($org['name']);

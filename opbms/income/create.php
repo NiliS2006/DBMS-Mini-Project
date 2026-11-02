@@ -10,9 +10,31 @@ $uid  = $_SESSION['user_id'];
 $role = $_SESSION['user_role'];
 
 $errors = [];
-$orgs  = $pdo->query("SELECT id, name FROM organizations WHERE is_active=1 ORDER BY name")->fetchAll();
-$depts = $pdo->query("SELECT d.id, d.name, o.name as org_name FROM departments d JOIN organizations o ON o.id=d.organization_id WHERE d.is_active=1 ORDER BY o.name, d.name")->fetchAll();
-$projs = $pdo->query("SELECT p.id, p.name, d.name as dept_name FROM projects p JOIN departments d ON d.id=p.department_id ORDER BY d.name, p.name")->fetchAll();
+if ($role === 'admin') {
+    $orgs = $pdo->query("SELECT id, name FROM organizations WHERE is_active=1 ORDER BY name")->fetchAll();
+    $depts = $pdo->query("SELECT d.id, d.name, o.name as org_name FROM departments d JOIN organizations o ON o.id=d.organization_id WHERE d.is_active=1 AND o.is_active=1 ORDER BY o.name, d.name")->fetchAll();
+    $projectScope = '1=1';
+    $projectParams = [];
+} elseif ($role === 'dept_manager') {
+    $orgStmt = $pdo->prepare("SELECT DISTINCT o.id, o.name FROM organizations o JOIN departments d ON d.organization_id=o.id WHERE d.manager_id=? AND d.is_active=1 AND o.is_active=1 ORDER BY o.name");
+    $orgStmt->execute([(int)$uid]);
+    $orgs = $orgStmt->fetchAll();
+    $deptStmt = $pdo->prepare("SELECT d.id, d.name, o.name as org_name FROM departments d JOIN organizations o ON o.id=d.organization_id WHERE d.manager_id=? AND d.is_active=1 AND o.is_active=1 ORDER BY o.name, d.name");
+    $deptStmt->execute([(int)$uid]);
+    $depts = $deptStmt->fetchAll();
+    [$projectScope, $projectParams] = getProjectScopeSql($role, (int)$uid);
+} else {
+    [$projectScope, $projectParams] = getProjectScopeSql($role, (int)$uid);
+    $orgStmt = $pdo->prepare("SELECT DISTINCT o.id, o.name FROM organizations o JOIN departments d ON d.organization_id=o.id JOIN projects p ON p.department_id=d.id WHERE d.is_active=1 AND o.is_active=1 AND $projectScope ORDER BY o.name");
+    $orgStmt->execute($projectParams);
+    $orgs = $orgStmt->fetchAll();
+    $deptStmt = $pdo->prepare("SELECT DISTINCT d.id, d.name, o.name as org_name FROM departments d JOIN organizations o ON o.id=d.organization_id JOIN projects p ON p.department_id=d.id WHERE d.is_active=1 AND o.is_active=1 AND $projectScope ORDER BY o.name, d.name");
+    $deptStmt->execute($projectParams);
+    $depts = $deptStmt->fetchAll();
+}
+$projStmt = $pdo->prepare("SELECT p.id, p.name, d.name as dept_name FROM projects p JOIN departments d ON d.id=p.department_id JOIN organizations o ON o.id=d.organization_id WHERE p.status='active' AND d.is_active=1 AND o.is_active=1 AND ($projectScope) ORDER BY d.name, p.name");
+$projStmt->execute($projectParams);
+$projs = $projStmt->fetchAll();
 
 $data = [
     'source'          => '',
@@ -36,8 +58,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $amount = sanitizeFloat($data['amount']);
     if (!$data['source']) $errors[] = 'Income source is required.';
-    if ($amount <= 0)     $errors[] = 'Amount must be greater than zero.';
+    if (strlen($data['source']) > 255) $errors[] = 'Income source must be 255 characters or fewer.';
+    if (!isValidMoney($data['amount'])) $errors[] = 'Enter a valid amount with up to two decimal places.';
     if (!isValidDate($data['income_date'])) $errors[] = 'Valid income date is required.';
+
+    if ($data['project_id']) {
+        $check = $pdo->prepare("SELECT p.department_id, d.organization_id
+            FROM projects p JOIN departments d ON d.id=p.department_id
+            JOIN organizations o ON o.id=d.organization_id
+            WHERE p.id=? AND p.status='active' AND d.is_active=1 AND o.is_active=1 AND ($projectScope)");
+        $check->execute(array_merge([$data['project_id']], $projectParams));
+        $project = $check->fetch();
+        if (!$project) {
+            $errors[] = 'Select an active project you are authorized to use.';
+        } else {
+            if ($data['department_id'] && (int)$data['department_id'] !== (int)$project['department_id']) {
+                $errors[] = 'The selected project does not belong to that department.';
+            }
+            if ($data['organization_id'] && (int)$data['organization_id'] !== (int)$project['organization_id']) {
+                $errors[] = 'The selected project does not belong to that organization.';
+            }
+            $data['department_id'] = (int)$project['department_id'];
+            $data['organization_id'] = (int)$project['organization_id'];
+        }
+    } elseif ($data['department_id']) {
+        $check = $pdo->prepare("SELECT d.organization_id FROM departments d
+            JOIN organizations o ON o.id=d.organization_id WHERE d.id=? AND d.is_active=1 AND o.is_active=1");
+        $check->execute([$data['department_id']]);
+        $departmentOrgId = $check->fetchColumn();
+        if (!$departmentOrgId) {
+            $errors[] = 'Select a valid active department.';
+        } else {
+            if ($data['organization_id'] && (int)$data['organization_id'] !== (int)$departmentOrgId) {
+                $errors[] = 'The selected department does not belong to that organization.';
+            }
+            if ($role === 'dept_manager') {
+                $check = $pdo->prepare("SELECT COUNT(*) FROM departments WHERE id=? AND manager_id=?");
+                $check->execute([$data['department_id'], (int)$uid]);
+                if (!$check->fetchColumn()) $errors[] = 'You are not authorized to use this department.';
+            }
+            $data['organization_id'] = (int)$departmentOrgId;
+        }
+    } elseif ($role === 'project_manager' || $role === 'dept_manager') {
+        $errors[] = 'Select a department you manage or one of its projects.';
+    }
+
+    if ($data['organization_id']) {
+        $check = $pdo->prepare("SELECT COUNT(*) FROM organizations WHERE id=? AND is_active=1");
+        $check->execute([$data['organization_id']]);
+        if (!$check->fetchColumn()) $errors[] = 'Select a valid active organization.';
+    } elseif ($role === 'admin') {
+        $errors[] = 'Select an organization for this income record.';
+    }
 
     if (empty($errors)) {
         $stmt = $pdo->prepare("INSERT INTO income_records (source, amount, income_date, description, organization_id, department_id, project_id, recorded_by)

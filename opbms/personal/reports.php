@@ -12,6 +12,8 @@ $role = $_SESSION['user_role'];
 // ─── Filters ─────────────────────────────────────────────────────────────────
 $yearFilter  = sanitizeInt($_GET['year']  ?? date('Y'));
 $monthFilter = sanitizeInt($_GET['month'] ?? 0); // 0 = all months
+if ($yearFilter < 2020 || $yearFilter > 2035) $yearFilter = (int)date('Y');
+if ($monthFilter < 0 || $monthFilter > 12) $monthFilter = 0;
 
 $monthCond  = $monthFilter ? ' AND MONTH(t.transaction_date)=?' : '';
 $monthParam = $monthFilter ? [$uid, $yearFilter, $monthFilter] : [$uid, $yearFilter];

@@ -13,6 +13,8 @@ $uid  = $_SESSION['user_id'];
 
 $month = sanitizeInt($_GET['month'] ?? date('n'));
 $year  = sanitizeInt($_GET['year']  ?? date('Y'));
+if ($month < 1 || $month > 12) $month = (int)date('n');
+if ($year < 2020 || $year > 2035) $year = (int)date('Y');
 
 $cats = $pdo->query("SELECT id, name FROM expense_categories WHERE type IN ('personal','both') AND is_active=1 ORDER BY name")->fetchAll();
 
@@ -22,23 +24,45 @@ $errors = [];
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) { $errors[] = 'Invalid CSRF token.'; }
     $amounts = $_POST['budget'] ?? [];
-    if (empty($errors)) {
-        foreach ($amounts as $catId => $amt) {
-            $catId = (int)$catId;
-            $amt   = sanitizeFloat($amt);
-            if ($catId <= 0) continue;
-            if ($amt <= 0) {
-                // Remove if set to 0
-                $pdo->prepare("DELETE FROM personal_budgets WHERE user_id=? AND category_id=? AND month=? AND year=?")
-                    ->execute([$uid, $catId, $month, $year]);
-            } else {
-                $pdo->prepare("INSERT INTO personal_budgets (user_id, category_id, amount, month, year)
-                    VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE amount=?")
-                    ->execute([$uid, $catId, $amt, $month, $year, $amt]);
-            }
+    $validCategoryIds = array_map('intval', array_column($cats, 'id'));
+    if (!is_array($amounts)) {
+        $errors[] = 'Invalid budget data.';
+        $amounts = [];
+    }
+    foreach ($amounts as $catId => $amt) {
+        $catId = filter_var($catId, FILTER_VALIDATE_INT);
+        if ($catId === false || !in_array((int)$catId, $validCategoryIds, true)) {
+            $errors[] = 'Select valid budget categories.';
+            break;
         }
-        setFlash('Budget limits saved successfully.', 'success');
-        redirect(BASE_URL.'/personal/budgets.php?month='.$month.'&year='.$year);
+        if (!is_string($amt) || (trim($amt) !== '' && !isValidMoney($amt, true))) {
+            $errors[] = 'Budget amounts must be valid and have up to two decimal places.';
+            break;
+        }
+    }
+    if (empty($errors)) {
+        try {
+            $pdo->beginTransaction();
+            foreach ($amounts as $catId => $amt) {
+                $catId = (int)$catId;
+                $amt = trim($amt) === '' ? 0 : sanitizeFloat($amt);
+                if ($amt <= 0) {
+                    $pdo->prepare("DELETE FROM personal_budgets WHERE user_id=? AND category_id=? AND month=? AND year=?")
+                        ->execute([$uid, $catId, $month, $year]);
+                } else {
+                    $pdo->prepare("INSERT INTO personal_budgets (user_id, category_id, amount, month, year)
+                        VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE amount=?")
+                        ->execute([$uid, $catId, $amt, $month, $year, $amt]);
+                }
+            }
+            $pdo->commit();
+            setFlash('Budget limits saved successfully.', 'success');
+            redirect(BASE_URL.'/personal/budgets.php?month='.$month.'&year='.$year);
+        } catch (PDOException $ex) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            error_log('Personal budget save failed: ' . $ex->getMessage());
+            $errors[] = 'Failed to save budget limits. Please try again.';
+        }
     }
 }
 

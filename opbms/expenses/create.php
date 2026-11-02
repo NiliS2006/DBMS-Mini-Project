@@ -17,16 +17,36 @@ $cats = $pdo->query("SELECT id, name FROM expense_categories WHERE type IN ('org
 if ($role === 'employee') {
     $projStmt = $pdo->prepare("SELECT p.id, p.name, d.name as dept_name
         FROM projects p JOIN departments d ON d.id=p.department_id
+        JOIN organizations o ON o.id=d.organization_id
         JOIN project_members pm ON pm.project_id=p.id
-        WHERE pm.user_id=? AND p.status='active' ORDER BY p.name");
+        WHERE pm.user_id=? AND p.status='active' AND d.is_active=1 AND o.is_active=1 ORDER BY p.name");
     $projStmt->execute([$uid]);
 } else {
-    $projStmt = $pdo->query("SELECT p.id, p.name, d.name as dept_name FROM projects p JOIN departments d ON d.id=p.department_id WHERE p.status='active' ORDER BY p.name");
+    [$projectScope, $projectParams] = getProjectScopeSql($role, (int)$uid);
+    $projStmt = $pdo->prepare("SELECT p.id, p.name, d.name as dept_name FROM projects p JOIN departments d ON d.id=p.department_id JOIN organizations o ON o.id=d.organization_id WHERE p.status='active' AND d.is_active=1 AND o.is_active=1 AND ($projectScope) ORDER BY p.name");
+    $projStmt->execute($projectParams);
 }
 $projects = $projStmt->fetchAll();
 
-$orgs = $pdo->query("SELECT id, name FROM organizations WHERE is_active=1 ORDER BY name")->fetchAll();
-$depts = $pdo->query("SELECT d.id, d.name, o.name as org_name FROM departments d JOIN organizations o ON o.id=d.organization_id WHERE d.is_active=1 ORDER BY o.name, d.name")->fetchAll();
+if ($role === 'admin') {
+    $orgs = $pdo->query("SELECT id, name FROM organizations WHERE is_active=1 ORDER BY name")->fetchAll();
+    $depts = $pdo->query("SELECT d.id, d.name, o.name as org_name FROM departments d JOIN organizations o ON o.id=d.organization_id WHERE d.is_active=1 AND o.is_active=1 ORDER BY o.name, d.name")->fetchAll();
+} elseif ($role === 'dept_manager') {
+    $scopeStmt = $pdo->prepare("SELECT DISTINCT o.id, o.name FROM organizations o JOIN departments d ON d.organization_id=o.id WHERE d.manager_id=? AND d.is_active=1 AND o.is_active=1 ORDER BY o.name");
+    $scopeStmt->execute([(int)$uid]);
+    $orgs = $scopeStmt->fetchAll();
+    $scopeStmt = $pdo->prepare("SELECT d.id, d.name, o.name as org_name FROM departments d JOIN organizations o ON o.id=d.organization_id WHERE d.manager_id=? AND d.is_active=1 AND o.is_active=1 ORDER BY o.name, d.name");
+    $scopeStmt->execute([(int)$uid]);
+    $depts = $scopeStmt->fetchAll();
+} else {
+    $scope = getProjectScopeSql($role, (int)$uid);
+    $scopeStmt = $pdo->prepare("SELECT DISTINCT o.id, o.name FROM organizations o JOIN departments d ON d.organization_id=o.id JOIN projects p ON p.department_id=d.id WHERE d.is_active=1 AND o.is_active=1 AND $scope[0] ORDER BY o.name");
+    $scopeStmt->execute($scope[1]);
+    $orgs = $scopeStmt->fetchAll();
+    $scopeStmt = $pdo->prepare("SELECT DISTINCT d.id, d.name, o.name as org_name FROM departments d JOIN organizations o ON o.id=d.organization_id JOIN projects p ON p.department_id=d.id WHERE d.is_active=1 AND o.is_active=1 AND $scope[0] ORDER BY o.name, d.name");
+    $scopeStmt->execute($scope[1]);
+    $depts = $scopeStmt->fetchAll();
+}
 
 $errors = [];
 $data = [
@@ -55,23 +75,90 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $amount = sanitizeFloat($data['amount']);
 
     if (!$data['title'])       $errors[] = 'Expense title is required.';
-    if ($amount <= 0)          $errors[] = 'Amount must be greater than zero.';
+    if (strlen($data['title']) > 255) $errors[] = 'Expense title must be 255 characters or fewer.';
+    if (!isValidMoney($data['amount'])) $errors[] = 'Enter a valid amount with up to two decimal places.';
     if (!$data['expense_date'] || !isValidDate($data['expense_date'])) $errors[] = 'Valid expense date is required.';
     if (strtotime($data['expense_date']) > time()) $errors[] = 'Expense date cannot be in the future.';
 
-    // Employees must submit against a project they belong to
-    if ($role === 'employee' && $data['project_id']) {
-        $check = $pdo->prepare("SELECT COUNT(*) FROM project_members WHERE project_id=? AND user_id=?");
-        $check->execute([$data['project_id'], $uid]);
-        if (!$check->fetchColumn()) $errors[] = 'You are not authorised to submit expenses against this project.';
+    $allowedCategory = true;
+    if ($data['category_id']) {
+        $categoryCheck = $pdo->prepare("SELECT COUNT(*) FROM expense_categories WHERE id=? AND is_active=1 AND type IN ('organizational','both')");
+        $categoryCheck->execute([$data['category_id']]);
+        $allowedCategory = (bool)$categoryCheck->fetchColumn();
+    }
+    if (!$allowedCategory) $errors[] = 'Select a valid organizational expense category.';
+
+    if (in_array($role, ['employee','project_manager'], true) && !$data['project_id']) {
+        $errors[] = 'Select a project you are authorized to use.';
+    }
+
+    if ($data['project_id']) {
+        $projectCondition = '';
+        $projectParams = [];
+        if ($role === 'employee') {
+            $projectCondition = ' AND EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=?)';
+            $projectParams[] = (int)$uid;
+        } elseif ($role !== 'admin') {
+            [$allowedProjects, $allowedProjectParams] = getProjectScopeSql($role, (int)$uid);
+            $projectCondition = " AND ($allowedProjects)";
+            $projectParams = $allowedProjectParams;
+        }
+        $projectCheck = $pdo->prepare("SELECT p.id, p.department_id, d.organization_id
+            FROM projects p JOIN departments d ON d.id=p.department_id
+            JOIN organizations o ON o.id=d.organization_id
+            WHERE p.id=? AND p.status='active' AND d.is_active=1 AND o.is_active=1 $projectCondition");
+        $projectCheck->execute(array_merge([$data['project_id']], $projectParams));
+        $project = $projectCheck->fetch();
+        if (!$project) {
+            $errors[] = 'Select an active project you are authorized to use.';
+        } else {
+            if ($data['department_id'] && (int)$data['department_id'] !== (int)$project['department_id']) {
+                $errors[] = 'The selected project does not belong to that department.';
+            }
+            if ($data['organization_id'] && (int)$data['organization_id'] !== (int)$project['organization_id']) {
+                $errors[] = 'The selected project does not belong to that organization.';
+            }
+            $data['department_id'] = (int)$project['department_id'];
+            $data['organization_id'] = (int)$project['organization_id'];
+        }
+    } elseif ($data['department_id']) {
+        $departmentCheck = $pdo->prepare("SELECT d.organization_id FROM departments d
+            JOIN organizations o ON o.id=d.organization_id WHERE d.id=? AND d.is_active=1 AND o.is_active=1");
+        $departmentCheck->execute([$data['department_id']]);
+        $departmentOrgId = $departmentCheck->fetchColumn();
+        if (!$departmentOrgId) {
+            $errors[] = 'Select a valid active department.';
+        } else {
+            if ($data['organization_id'] && (int)$data['organization_id'] !== (int)$departmentOrgId) {
+                $errors[] = 'The selected department does not belong to that organization.';
+            }
+            if ($role === 'dept_manager') {
+                $managerCheck = $pdo->prepare("SELECT COUNT(*) FROM departments WHERE id=? AND manager_id=?");
+                $managerCheck->execute([$data['department_id'], (int)$uid]);
+                if (!$managerCheck->fetchColumn()) $errors[] = 'You are not authorized to submit against this department.';
+            }
+            $data['organization_id'] = (int)$departmentOrgId;
+        }
+    } elseif ($role === 'dept_manager') {
+        $errors[] = 'Select a department you manage or one of its projects.';
+    }
+
+    if ($data['organization_id'] && !$data['project_id'] && !$data['department_id']) {
+        $orgCheck = $pdo->prepare("SELECT COUNT(*) FROM organizations WHERE id=? AND is_active=1");
+        $orgCheck->execute([$data['organization_id']]);
+        if (!$orgCheck->fetchColumn()) $errors[] = 'Select a valid active organization.';
+    }
+
+    if ($role !== 'admin' && $role !== 'dept_manager' && !$data['project_id']) {
+        $errors[] = 'You must associate this expense with an authorized project.';
     }
 
     // Budget warning (non-blocking, just informational)
     $budgetWarning = '';
     if ($data['project_id'] && empty($errors)) {
-        $budg = $pdo->prepare("SELECT COALESCE(b.amount,0) - COALESCE((SELECT SUM(e2.amount) FROM expenses e2 WHERE e2.project_id=? AND e2.status='approved'),0) AS remaining
-            FROM budgets b WHERE b.entity_type='project' AND b.entity_id=? AND b.status='approved' LIMIT 1");
-        $budg->execute([$data['project_id'], $data['project_id']]);
+        $budg = $pdo->prepare("SELECT remaining_budget AS remaining
+            FROM v_project_budget_summary WHERE project_id=? AND fiscal_year=?");
+        $budg->execute([$data['project_id'], (int)substr($data['expense_date'], 0, 4)]);
         $row = $budg->fetch();
         if ($row && $row['remaining'] !== null && $amount > (float)$row['remaining']) {
             $budgetWarning = 'Warning: This expense (₹'.number_format($amount,2).') exceeds the remaining project budget (₹'.number_format((float)$row['remaining'],2).'). It will still be submitted for approval.';
@@ -80,19 +167,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // Handle receipt upload
     $receiptPath = null;
-    if (!empty($_FILES['receipt']['name'])) {
-        $allowed = ['jpg','jpeg','png','pdf','webp'];
-        $ext = strtolower(pathinfo($_FILES['receipt']['name'], PATHINFO_EXTENSION));
-        if (!in_array($ext, $allowed)) { $errors[] = 'Receipt must be JPG, PNG, PDF or WEBP.'; }
-        elseif ($_FILES['receipt']['size'] > 5 * 1024 * 1024) { $errors[] = 'Receipt file too large (max 5 MB).'; }
-        else {
-            $uploadDir = __DIR__ . '/../assets/uploads/';
-            if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
-            $filename = 'rcpt_' . time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-            if (move_uploaded_file($_FILES['receipt']['tmp_name'], $uploadDir . $filename)) {
-                $receiptPath = 'assets/uploads/' . $filename;
+    if (isset($_FILES['receipt']) && $_FILES['receipt']['error'] !== UPLOAD_ERR_NO_FILE) {
+        $mimeExtensions = [
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'application/pdf' => 'pdf',
+            'image/webp' => 'webp',
+        ];
+        if ($_FILES['receipt']['error'] !== UPLOAD_ERR_OK) {
+            $errors[] = 'Receipt upload failed. Please choose the file again.';
+        } elseif ($_FILES['receipt']['size'] > 5 * 1024 * 1024) {
+            $errors[] = 'Receipt file too large (max 5 MB).';
+        } elseif (!is_uploaded_file($_FILES['receipt']['tmp_name'])) {
+            $errors[] = 'Receipt upload could not be verified.';
+        } else {
+            $mime = (new finfo(FILEINFO_MIME_TYPE))->file($_FILES['receipt']['tmp_name']);
+            if (!isset($mimeExtensions[$mime])) {
+                $errors[] = 'Receipt must be a JPG, PNG, PDF or WEBP file.';
             } else {
-                $errors[] = 'Failed to upload receipt. Please try again.';
+            $uploadDir = __DIR__ . '/../assets/uploads/';
+                if (!is_dir($uploadDir) && !mkdir($uploadDir, 0755, true) && !is_dir($uploadDir)) {
+                    $errors[] = 'Receipt storage is unavailable. Please contact the administrator.';
+                } else {
+                    $filename = 'rcpt_' . bin2hex(random_bytes(16)) . '.' . $mimeExtensions[$mime];
+                    if (move_uploaded_file($_FILES['receipt']['tmp_name'], $uploadDir . $filename)) {
+                        $receiptPath = 'assets/uploads/' . $filename;
+                    } else {
+                        $errors[] = 'Failed to upload receipt. Please try again.';
+                    }
+                }
             }
         }
     }
@@ -120,6 +223,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect(BASE_URL . '/expenses/view.php?id=' . $expId);
         } catch (Exception $ex) {
             $pdo->rollBack();
+            if ($receiptPath && is_file(__DIR__ . '/../' . $receiptPath)) {
+                unlink(__DIR__ . '/../' . $receiptPath);
+            }
+            error_log('Expense submission failed: ' . $ex->getMessage());
             $errors[] = 'Failed to submit expense. Please try again.';
         }
     }

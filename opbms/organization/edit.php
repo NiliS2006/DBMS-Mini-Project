@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 session_start();
 define('BASE_URL', '/opbms');
 require_once __DIR__ . '/../config/database.php';
@@ -16,7 +16,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $data['description']   = trim($_POST['description'] ?? '');
     $data['address']       = trim($_POST['address'] ?? '');
     $data['contact_email'] = trim($_POST['contact_email'] ?? '');
-    if (!$data['name']) $errors[] = 'Organization name is required.';
+    if (!$data['name'] || strlen($data['name']) > 200) $errors[] = 'Organization name must be between 1 and 200 characters.';
+    if ($data['contact_email'] && !filter_var($data['contact_email'], FILTER_VALIDATE_EMAIL)) $errors[] = 'Invalid email address.';
     if (empty($errors)) {
         $stmt = $pdo->prepare("UPDATE organizations SET name=?,description=?,address=?,contact_email=? WHERE id=?");
         $stmt->execute([$data['name'],$data['description'],$data['address'],$data['contact_email'],$id]);
@@ -38,7 +39,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
       <?php foreach ($errors as $err): ?><div class="alert alert-danger"><?= e($err) ?></div><?php endforeach; ?>
       <form method="POST">
         <?= csrfField() ?>
-        <div class="form-group"><label class="required">Organization Name</label><input type="text" name="name" value="<?= e($data['name']) ?>" required></div>
+        <div class="form-group"><label class="required">Organization Name</label><input type="text" name="name" value="<?= e($data['name']) ?>" maxlength="200" required></div>
         <div class="form-group"><label>Description</label><textarea name="description"><?= e($data['description']) ?></textarea></div>
         <div class="form-group"><label>Contact Email</label><input type="email" name="contact_email" value="<?= e($data['contact_email']) ?>"></div>
         <div class="form-group"><label>Address</label><textarea name="address" rows="2"><?= e($data['address']) ?></textarea></div>

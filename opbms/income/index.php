@@ -14,8 +14,9 @@ $projFilter = sanitizeInt($_GET['proj_id'] ?? 0);
 $fromDate   = $_GET['from'] ?? '';
 $toDate     = $_GET['to']   ?? '';
 
-$where  = ['1=1'];
-$params = [];
+$incomeScope = getIncomeScopeSql($role, (int)$uid, 'ir');
+$where  = [$incomeScope[0]];
+$params = $incomeScope[1];
 if ($orgFilter)  { $where[] = 'ir.organization_id = ?'; $params[] = $orgFilter; }
 if ($projFilter) { $where[] = 'ir.project_id = ?'; $params[] = $projFilter; }
 if ($fromDate && isValidDate($fromDate)) { $where[] = 'ir.income_date >= ?'; $params[] = $fromDate; }
@@ -35,8 +36,23 @@ $records = $stmt->fetchAll();
 
 $totalIncome = array_sum(array_column($records, 'amount'));
 
-$orgs  = $pdo->query("SELECT id, name FROM organizations WHERE is_active=1 ORDER BY name")->fetchAll();
-$projs = $pdo->query("SELECT id, name FROM projects ORDER BY name")->fetchAll();
+if ($role === 'admin') {
+    $orgs = $pdo->query("SELECT id, name FROM organizations WHERE is_active=1 ORDER BY name")->fetchAll();
+} elseif ($role === 'dept_manager') {
+    $orgStmt = $pdo->prepare("SELECT DISTINCT o.id, o.name FROM organizations o JOIN departments d ON d.organization_id=o.id WHERE d.manager_id=? AND d.is_active=1 ORDER BY o.name");
+    $orgStmt->execute([(int)$uid]);
+    $orgs = $orgStmt->fetchAll();
+} else {
+    [$projectScope, $projectParams] = getProjectScopeSql($role, (int)$uid);
+    $orgStmt = $pdo->prepare("SELECT DISTINCT o.id, o.name FROM organizations o JOIN departments d ON d.organization_id=o.id JOIN projects p ON p.department_id=d.id WHERE $projectScope ORDER BY o.name");
+    $orgStmt->execute($projectParams);
+    $orgs = $orgStmt->fetchAll();
+}
+
+[$projectScope, $projectParams] = getProjectScopeSql($role, (int)$uid);
+$projectStmt = $pdo->prepare("SELECT p.id, p.name FROM projects p WHERE $projectScope ORDER BY p.name");
+$projectStmt->execute($projectParams);
+$projs = $projectStmt->fetchAll();
 
 $pageTitle = 'Income Records';
 require_once __DIR__ . '/../includes/header.php';

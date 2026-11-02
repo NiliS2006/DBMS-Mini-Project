@@ -7,11 +7,15 @@ require_once __DIR__ . '/../includes/functions.php';
 requireLogin();
 $pdo  = getDB();
 $role = $_SESSION['user_role'];
+$uid  = (int)$_SESSION['user_id'];
 if ($role === 'personal') { redirect(BASE_URL . '/personal/dashboard.php'); }
 
 // ─── Filters ────────────────────────────────────────────────────────────────
 $yearFilter = sanitizeInt($_GET['year'] ?? date('Y'));
 $orgFilter  = sanitizeInt($_GET['org_id'] ?? 0);
+if ($yearFilter < 2020 || $yearFilter > 2035) $yearFilter = (int)date('Y');
+$expenseScope = getExpenseScopeSql($role, $uid, 'e');
+$incomeScope = getIncomeScopeSql($role, $uid, 'ir');
 
 // ─── KPI totals ─────────────────────────────────────────────────────────────
 $kpiParams = [$yearFilter];
@@ -23,46 +27,49 @@ $kpi = $pdo->prepare("
         SUM(CASE WHEN e.status='approved' THEN e.amount ELSE 0 END) AS total_approved,
         SUM(CASE WHEN e.status='pending'  THEN e.amount ELSE 0 END) AS total_pending,
         SUM(CASE WHEN e.status='rejected' THEN e.amount ELSE 0 END) AS total_rejected,
-        COUNT(*)                                                      AS total_count,
+        SUM(CASE WHEN e.status<>'cancelled' THEN 1 ELSE 0 END)       AS total_count,
         SUM(CASE WHEN e.status='approved' THEN 1 ELSE 0 END)        AS approved_count,
         SUM(CASE WHEN e.status='pending'  THEN 1 ELSE 0 END)        AS pending_count,
         SUM(CASE WHEN e.status='rejected' THEN 1 ELSE 0 END)        AS rejected_count
     FROM expenses e
     WHERE YEAR(e.expense_date) = ?
     $orgCond
+    AND ({$expenseScope[0]})
 ");
-$kpi->execute($kpiParams);
+$kpi->execute(array_merge($kpiParams, $expenseScope[1]));
 $kpi = $kpi->fetch();
 
 // ─── Total income for the year ───────────────────────────────────────────────
 $incomeParams = [$yearFilter];
 $incomeOrgCond = '';
 if ($orgFilter) { $incomeOrgCond = ' AND organization_id = ?'; $incomeParams[] = $orgFilter; }
-$totalIncome = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM income_records WHERE YEAR(income_date) = ? $incomeOrgCond");
-$totalIncome->execute($incomeParams);
+$totalIncome = $pdo->prepare("SELECT COALESCE(SUM(ir.amount),0) FROM income_records ir WHERE YEAR(ir.income_date) = ? $incomeOrgCond AND ({$incomeScope[0]})");
+$totalIncome->execute(array_merge($incomeParams, $incomeScope[1]));
 $totalIncome = (float) $totalIncome->fetchColumn();
 
 // ─── Monthly expense vs income (approved) ───────────────────────────────────
 $monthlyExpStmt = $pdo->prepare("
-    SELECT MONTH(expense_date) AS m, SUM(amount) AS total
-    FROM expenses
-    WHERE status='approved' AND YEAR(expense_date)=?
-    " . ($orgFilter ? ' AND organization_id=?' : '') . "
-    GROUP BY MONTH(expense_date)
+    SELECT MONTH(e.expense_date) AS m, SUM(e.amount) AS total
+    FROM expenses e
+    WHERE e.status='approved' AND YEAR(e.expense_date)=?
+    " . ($orgFilter ? ' AND e.organization_id=?' : '') . "
+    AND ({$expenseScope[0]})
+    GROUP BY MONTH(e.expense_date)
     ORDER BY m
 ");
-$monthlyExpStmt->execute($orgFilter ? [$yearFilter, $orgFilter] : [$yearFilter]);
+$monthlyExpStmt->execute(array_merge($orgFilter ? [$yearFilter, $orgFilter] : [$yearFilter], $expenseScope[1]));
 $monthlyExpRows = $monthlyExpStmt->fetchAll(PDO::FETCH_KEY_PAIR);
 
 $monthlyIncStmt = $pdo->prepare("
-    SELECT MONTH(income_date) AS m, SUM(amount) AS total
-    FROM income_records
-    WHERE YEAR(income_date)=?
-    " . ($orgFilter ? ' AND organization_id=?' : '') . "
-    GROUP BY MONTH(income_date)
+    SELECT MONTH(ir.income_date) AS m, SUM(ir.amount) AS total
+    FROM income_records ir
+    WHERE YEAR(ir.income_date)=?
+    " . ($orgFilter ? ' AND ir.organization_id=?' : '') . "
+    AND ({$incomeScope[0]})
+    GROUP BY MONTH(ir.income_date)
     ORDER BY m
 ");
-$monthlyIncStmt->execute($orgFilter ? [$yearFilter, $orgFilter] : [$yearFilter]);
+$monthlyIncStmt->execute(array_merge($orgFilter ? [$yearFilter, $orgFilter] : [$yearFilter], $incomeScope[1]));
 $monthlyIncRows = $monthlyIncStmt->fetchAll(PDO::FETCH_KEY_PAIR);
 
 $monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -82,30 +89,49 @@ $catStmt = $pdo->prepare("
     FROM expenses e
     LEFT JOIN expense_categories ec ON ec.id=e.category_id
     WHERE e.status='approved' AND YEAR(e.expense_date)=? $catCond
+      AND ({$expenseScope[0]})
     GROUP BY ec.name
     ORDER BY total DESC
     LIMIT 10
 ");
-$catStmt->execute($catParams);
+$catStmt->execute(array_merge($catParams, $expenseScope[1]));
 $catRows  = $catStmt->fetchAll();
 $catNames = array_column($catRows, 'name');
 $catTotals = array_map('floatval', array_column($catRows, 'total'));
 
 // ─── Department budget utilization ──────────────────────────────────────────
+if ($role === 'admin') {
+    $deptScope = '1=1';
+    $deptScopeParams = [];
+} elseif ($role === 'dept_manager') {
+    $deptScope = 'dept_id IN (SELECT id FROM departments WHERE manager_id=?)';
+    $deptScopeParams = [$uid];
+} else {
+    $deptScope = '1=0';
+    $deptScopeParams = [];
+}
+$deptFilters = ['fiscal_year=?', "($deptScope)"];
+$deptParams = [$yearFilter];
+if ($deptScopeParams) $deptParams = array_merge($deptParams, $deptScopeParams);
+if ($orgFilter) { $deptFilters[] = 'organization_id=?'; $deptParams[] = $orgFilter; }
 $deptStmt = $pdo->prepare("
-    SELECT * FROM v_dept_budget_summary
-    " . ($orgFilter ? ' WHERE org_name IN (SELECT name FROM organizations WHERE id=?)' : '') . "
+    SELECT * FROM v_dept_budget_summary WHERE " . implode(' AND ', $deptFilters) . "
     ORDER BY utilization_pct DESC
     LIMIT 10
 ");
-$deptStmt->execute($orgFilter ? [$orgFilter] : []);
+$deptStmt->execute($deptParams);
 $deptRows = $deptStmt->fetchAll();
 
 // ─── Project budget utilization ──────────────────────────────────────────────
+[$projectScope, $projectScopeParams] = getProjectScopeSql($role, $uid);
+$projectFilters = ['fiscal_year=?', "project_id IN (SELECT p.id FROM projects p WHERE $projectScope)"];
+$projectParams = array_merge([$yearFilter], $projectScopeParams);
+if ($orgFilter) { $projectFilters[] = 'organization_id=?'; $projectParams[] = $orgFilter; }
 $projStmt = $pdo->prepare("
-    SELECT * FROM v_project_budget_summary ORDER BY utilization_pct DESC LIMIT 8
+    SELECT * FROM v_project_budget_summary WHERE " . implode(' AND ', $projectFilters) . "
+    ORDER BY utilization_pct DESC LIMIT 8
 ");
-$projStmt->execute();
+$projStmt->execute($projectParams);
 $projRows = $projStmt->fetchAll();
 
 // ─── Top 5 spenders ─────────────────────────────────────────────────────────
@@ -114,11 +140,12 @@ $topSpendersStmt = $pdo->prepare("
     FROM expenses e
     JOIN users u ON u.id=e.submitted_by
     WHERE e.status='approved' AND YEAR(e.expense_date)=? $orgCond
+      AND ({$expenseScope[0]})
     GROUP BY u.id, u.name
     ORDER BY total DESC
     LIMIT 5
 ");
-$topSpendersStmt->execute($kpiParams);
+$topSpendersStmt->execute(array_merge($kpiParams, $expenseScope[1]));
 $topSpenders = $topSpendersStmt->fetchAll();
 
 // ─── Available orgs and years for filters ────────────────────────────────────

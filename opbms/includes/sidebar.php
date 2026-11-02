@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // Sidebar navigation - role-aware
 $role = $_SESSION['user_role'] ?? '';
 $uri  = $_SERVER['REQUEST_URI'];

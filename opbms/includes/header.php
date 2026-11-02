@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 // Top page header (HTML head + navbar)
 if (session_status() === PHP_SESSION_NONE) session_start();
 if (!defined('BASE_URL')) define('BASE_URL', '/opbms');
@@ -14,7 +14,8 @@ $pageTitle   = $pageTitle ?? 'OPBMS';
 <title><?= e($pageTitle) ?> | OPBMS</title>
 <meta name="description" content="Organizational and Personal Budget Management System">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="<?= BASE_URL ?>/assets/css/style.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -24,15 +25,23 @@ $pageTitle   = $pageTitle ?? 'OPBMS';
 
 <!-- TOP NAVBAR -->
 <header class="topbar">
-  <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle Sidebar">
+  <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle Sidebar" aria-controls="sidebar" aria-expanded="false">
     <i class="fa fa-bars"></i>
   </button>
-  <div class="topbar-brand">
-    <i class="fa fa-chart-pie brand-icon"></i>
+  <a class="topbar-brand" href="<?= BASE_URL ?>/">
+    <span class="brand-mark"><i class="fa-solid fa-chart-pie"></i></span>
     <span>OPBMS</span>
-  </div>
+  </a>
   <nav class="topbar-right">
-    <a href="<?= BASE_URL ?>/notifications.php" class="topbar-icon-btn" title="Notifications">
+    <?php
+    $currentRole = $currentUser['role'] ?? '';
+    $activityUrl = $currentRole === 'personal'
+        ? BASE_URL . '/personal/transactions.php'
+        : (in_array($currentRole, ['admin', 'dept_manager', 'project_manager'], true)
+            ? BASE_URL . '/approvals/index.php'
+            : BASE_URL . '/expenses/index.php');
+    ?>
+    <a href="<?= $activityUrl ?>" class="topbar-icon-btn" title="<?= in_array($currentRole, ['admin', 'dept_manager', 'project_manager'], true) ? 'Review approvals' : 'View activity' ?>" aria-label="<?= in_array($currentRole, ['admin', 'dept_manager', 'project_manager'], true) ? 'Review approvals' : 'View activity' ?>">
       <i class="fa fa-bell"></i>
     </a>
     <?php if ($currentUser): ?>

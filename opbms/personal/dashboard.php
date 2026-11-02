@@ -182,11 +182,19 @@ require_once __DIR__ . '/../includes/sidebar.php';
   <div class="card">
     <div class="card-header">
       <div class="card-title"><i class="fa fa-exchange-alt"></i> Recent Transactions</div>
+      <div class="dashboard-tools">
+        <input type="search" data-filter-search="recentTransactionsTable" aria-label="Search recent transactions" placeholder="Search transactions">
+        <select data-filter-status="recentTransactionsTable" aria-label="Filter transactions by type">
+          <option value="">All types</option>
+          <option value="income">Income</option>
+          <option value="expense">Expense</option>
+        </select>
+      </div>
       <a href="<?= BASE_URL ?>/personal/transactions.php?month=<?= $month ?>&year=<?= $year ?>" class="btn btn-sm btn-secondary">View All</a>
     </div>
     <div class="card-body" style="padding:0;">
       <div class="table-wrap">
-        <table>
+        <table id="recentTransactionsTable">
           <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Type</th><th>Amount</th></tr></thead>
           <tbody>
             <?php if (empty($recentTx)): ?>
@@ -196,7 +204,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
             </td></tr>
             <?php else: ?>
             <?php foreach ($recentTx as $tx): ?>
-            <tr>
+            <tr data-filter-item>
               <td><?= formatDate($tx['transaction_date']) ?></td>
               <td><?= e($tx['description'] ?? '–') ?></td>
               <td><?= e($tx['cat_name'] ?? '–') ?></td>
@@ -206,6 +214,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
               </td>
             </tr>
             <?php endforeach; ?>
+            <tr data-filter-empty hidden><td colspan="5"><div class="empty-state"><i class="fa fa-search"></i><p>No transactions match these filters.</p></div></td></tr>
             <?php endif; ?>
           </tbody>
         </table>
@@ -226,16 +235,16 @@ if (trendCtx) {
     data: {
       labels: trendLabels,
       datasets: [
-        { label: 'Income',  data: trendIncome,  backgroundColor: '#22c55e88', borderColor: '#22c55e', borderWidth: 2, borderRadius: 4 },
-        { label: 'Expense', data: trendExpense, backgroundColor: '#ef444488', borderColor: '#ef4444', borderWidth: 2, borderRadius: 4 }
+        { label: 'Income',  data: trendIncome,  backgroundColor: '#15856f55', borderColor: '#15856f', borderWidth: 2, borderRadius: 4 },
+        { label: 'Expense', data: trendExpense, backgroundColor: '#c4494955', borderColor: '#c44949', borderWidth: 2, borderRadius: 4 }
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#94a3b8' } } },
+      plugins: { legend: { labels: { color: '#596d79' } } },
       scales: {
-        x: { ticks: { color: '#64748b' }, grid: { color: '#242b3d' } },
-        y: { ticks: { color: '#64748b', callback: v => '₹'+(v/1000).toFixed(0)+'K' }, grid: { color: '#242b3d' } }
+        x: { ticks: { color: '#85949c' }, grid: { color: '#e4eaec' } },
+        y: { ticks: { color: '#85949c', callback: v => '₹'+(v/1000).toFixed(0)+'K' }, grid: { color: '#e4eaec' } }
       }
     }
   });
@@ -252,14 +261,14 @@ if (catCtx && catLabels.length) {
       labels: catLabels,
       datasets: [{
         data: catValues,
-        backgroundColor: ['#4f8ef7','#22c55e','#f59e0b','#ef4444','#7c5cfc','#3b82f6','#06b6d4','#84cc16','#f97316'],
+        backgroundColor: ['#087e78','#15856f','#bd7b12','#c44949','#7268a6','#3376a5','#3a9aa0','#83a84e','#c27b4b'],
         borderWidth: 0, hoverOffset: 8
       }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
-        legend: { position: 'right', labels: { color: '#94a3b8', font: { size: 11 } } },
+        legend: { position: 'right', labels: { color: '#596d79', font: { size: 11 } } },
         tooltip: { callbacks: { label: ctx => ' ₹' + ctx.parsed.toLocaleString('en-IN') } }
       }
     }

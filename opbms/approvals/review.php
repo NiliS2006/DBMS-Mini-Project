@@ -12,6 +12,7 @@ $role = $_SESSION['user_role'];
 $id = sanitizeInt($_GET['id'] ?? 0);
 if (!$id) { setFlash('Invalid expense.','danger'); redirect(BASE_URL.'/approvals/index.php'); }
 
+$expenseScope = getExpenseScopeSql($role, (int)$uid, 'e');
 $stmt = $pdo->prepare("SELECT e.*, u.name as submitter_name, u.email as submitter_email,
     ec.name as cat_name, p.name as proj_name, p.id as proj_id, d.name as dept_name, o.name as org_name,
     a.name as approver_name
@@ -22,8 +23,8 @@ $stmt = $pdo->prepare("SELECT e.*, u.name as submitter_name, u.email as submitte
     LEFT JOIN departments d ON d.id=e.department_id
     LEFT JOIN organizations o ON o.id=e.organization_id
     LEFT JOIN users a ON a.id=e.approved_by
-    WHERE e.id=?");
-$stmt->execute([$id]); $exp = $stmt->fetch();
+    WHERE e.id=? AND ({$expenseScope[0]})");
+$stmt->execute(array_merge([$id], $expenseScope[1])); $exp = $stmt->fetch();
 
 if (!$exp) { setFlash('Expense not found.','danger'); redirect(BASE_URL.'/approvals/index.php'); }
 if ($exp['status'] !== 'pending') {
@@ -39,10 +40,9 @@ if ($exp['submitted_by'] == $uid) {
 // Project budget remaining
 $budgetInfo = null;
 if ($exp['proj_id']) {
-    $b = $pdo->prepare("SELECT COALESCE(b.amount,0) AS budget,
-        COALESCE((SELECT SUM(e2.amount) FROM expenses e2 WHERE e2.project_id=? AND e2.status='approved'),0) AS spent
-        FROM budgets b WHERE b.entity_type='project' AND b.entity_id=? AND b.status='approved' LIMIT 1");
-    $b->execute([$exp['proj_id'], $exp['proj_id']]);
+    $b = $pdo->prepare("SELECT allocated_budget AS budget, approved_expenditure AS spent
+        FROM v_project_budget_summary WHERE project_id=? AND fiscal_year=?");
+    $b->execute([$exp['proj_id'], (int)substr($exp['expense_date'], 0, 4)]);
     $budgetInfo = $b->fetch();
 }
 
@@ -56,6 +56,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if (!in_array($action, ['approved','rejected'])) $errors[] = 'Invalid action.';
     if ($action === 'rejected' && !$reason) $errors[] = 'A rejection reason is required.';
+    if (strlen($reason) > 2000 || strlen($notes) > 2000) $errors[] = 'Decision notes must be 2000 characters or fewer.';
 
     // Double-check self-approval on POST
     if ($exp['submitted_by'] == $uid) $errors[] = 'You cannot approve your own expense.';
@@ -63,17 +64,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (empty($errors)) {
         $pdo->beginTransaction();
         try {
-            $pdo->prepare("UPDATE expenses SET status=?, approved_by=?, approved_at=NOW(), rejection_reason=? WHERE id=? AND status='pending'")
-                ->execute([$action, $uid, $action==='rejected' ? $reason : null, $id]);
+            $update = $pdo->prepare("UPDATE expenses SET status=?, approved_by=?, approved_at=NOW(), rejection_reason=? WHERE id=? AND status='pending'");
+            $update->execute([$action, $uid, $action==='rejected' ? $reason : null, $id]);
+            if ($update->rowCount() !== 1) {
+                $pdo->rollBack();
+                $errors[] = 'This expense was already reviewed. Refresh the approval queue.';
+            } else {
+                $pdo->prepare("INSERT INTO approval_history (expense_id, action, action_by, notes) VALUES (?,?,?,?)")
+                    ->execute([$id, $action, $uid, $notes ?: null]);
 
-            $pdo->prepare("INSERT INTO approval_history (expense_id, action, action_by, notes) VALUES (?,?,?,?)")
-                ->execute([$id, $action, $uid, $notes ?: null]);
-
-            $pdo->commit();
-            setFlash('Expense has been ' . $action . ' successfully.', $action==='approved'?'success':'warning');
-            redirect(BASE_URL.'/approvals/index.php');
+                $pdo->commit();
+                setFlash('Expense has been ' . $action . ' successfully.', $action==='approved'?'success':'warning');
+                redirect(BASE_URL.'/approvals/index.php');
+            }
         } catch (Exception $ex) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            error_log('Expense approval failed: ' . $ex->getMessage());
             $errors[] = 'Failed to process decision. Please try again.';
         }
     }
@@ -119,7 +125,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
         </div>
         <?php if ($exp['receipt_path']): ?>
         <div style="margin-top:14px;">
-          <a href="<?= BASE_URL ?>/<?= e($exp['receipt_path']) ?>" target="_blank" class="btn btn-sm btn-secondary"><i class="fa fa-paperclip"></i> View Receipt</a>
+          <a href="<?= BASE_URL ?>/expenses/receipt.php?id=<?= $id ?>" target="_blank" rel="noopener" class="btn btn-sm btn-secondary"><i class="fa fa-paperclip"></i> View Receipt</a>
         </div>
         <?php endif; ?>
 
